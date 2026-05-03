@@ -1,7 +1,7 @@
 // Launch Library 2 API client
 // Docs: https://ll.thespacedevs.com/docs/
 
-const LL2_BASE = 'https://ll.thespacedevs.com/2.2.0'
+const LL2_BASE = 'https://ll.thespacedevs.com/2.3.0'
 
 // Subset of the LL2 launch object we care about
 export interface LL2Launch {
@@ -14,12 +14,12 @@ export interface LL2Launch {
   rocket: { configuration: { name: string } }
   pad: { name: string; location: { name: string } }
   mission: { name: string; description: string } | null
-  flightplan: LL2FlightplanEvent[] | null  // only on detailed endpoint; paid tier
+  timeline: LL2TimelineEvent[] | null
 }
 
-export interface LL2FlightplanEvent {
-  description: string
-  relative_time: string  // e.g. "-00:05:00" or "00:01:20"
+export interface LL2TimelineEvent {
+  type: { abbrev: string }
+  relative_time: string  // ISO 8601 duration e.g. "-PT38M" or "PT1M20S"
 }
 
 // LL2 status abbrevs → our status
@@ -45,12 +45,15 @@ export function mapT0(net: string | null): number | null {
   return isNaN(ts) ? null : Math.floor(ts / 1000)
 }
 
-// Parse "HH:MM:SS" or "-HH:MM:SS" relative time → seconds offset from T-0
+// Parse ISO 8601 duration e.g. "-PT38M", "PT1M20S", "-PT1H2M30S" → signed seconds
 export function parseRelativeTime(rel: string): number {
   const neg = rel.startsWith('-')
-  const parts = rel.replace(/^-/, '').split(':').map(Number)
-  const secs = (parts[0] ?? 0) * 3600 + (parts[1] ?? 0) * 60 + (parts[2] ?? 0)
-  return neg ? -secs : secs
+  const s = rel.replace(/^-/, '')
+  const h = Number(s.match(/(\d+)H/)?.[1] ?? 0)
+  const m = Number(s.match(/(\d+)M/)?.[1] ?? 0)
+  const sec = Number(s.match(/(\d+)S/)?.[1] ?? 0)
+  const total = h * 3600 + m * 60 + sec
+  return neg ? -total : total
 }
 
 export interface LL2Client {
@@ -67,7 +70,7 @@ export function createLL2Client(apiKey: string): LL2Client {
   return {
     async getUpcomingLaunches(limit = 50): Promise<LL2Launch[]> {
       // status=1 (Go), 2 (TBD), 3 (TBC), 8 (Hold), 5 (In Flight)
-      const url = `${LL2_BASE}/launch/upcoming/?limit=${limit}&ordering=net&status=1,2,3,5,8&mode=detailed`
+      const url = `${LL2_BASE}/launches/upcoming/?limit=${limit}&ordering=net&status=1,2,3,5,8&mode=detailed`
       const res = await fetch(url, { headers })
       if (!res.ok) throw new Error(`LL2 upcoming fetch failed: ${res.status}`)
       const data = await res.json<{ results: LL2Launch[] }>()
@@ -75,7 +78,7 @@ export function createLL2Client(apiKey: string): LL2Client {
     },
 
     async getLaunch(id: string): Promise<LL2Launch | null> {
-      const res = await fetch(`${LL2_BASE}/launch/${id}/?mode=detailed`, { headers })
+      const res = await fetch(`${LL2_BASE}/launches/${id}/?mode=detailed`, { headers })
       if (res.status === 404) return null
       if (!res.ok) throw new Error(`LL2 launch fetch failed: ${res.status}`)
       return res.json<LL2Launch>()

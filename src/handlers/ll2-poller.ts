@@ -15,9 +15,15 @@ export async function pollLL2(env: Env) {
 // Fetch a single launch by ID — called when the app registers a subscription
 // so the DB is immediately up-to-date without waiting for the next poll cycle
 export async function syncLaunchById(env: Env, id: string) {
-  const client = createLL2Client(env.LL2_API_KEY)
-  const ll2 = await client.getLaunch(id)
-  if (ll2) await syncLaunch(env, ll2)
+  try {
+    const client = createLL2Client(env.LL2_API_KEY)
+    const ll2 = await client.getLaunch(id)
+    if (!ll2) { console.warn(`syncLaunchById: LL2 returned null for ${id}`); return }
+    console.log(`syncLaunchById: ${id} timeline events=${ll2.timeline?.length ?? 0}`)
+    await syncLaunch(env, ll2)
+  } catch (err) {
+    console.error(`syncLaunchById failed for ${id}:`, err)
+  }
 }
 
 async function syncLaunch(env: Env, ll2: {
@@ -26,15 +32,15 @@ async function syncLaunch(env: Env, ll2: {
   status: { id: number; abbrev: string }
   rocket: { configuration: { name: string } }
   pad: { name: string; location: { name: string } }
-  flightplan: Array<{ description: string; relative_time: string }> | null
+  timeline: Array<{ type: { abbrev: string }; relative_time: string }> | null
 }) {
   const t0 = mapT0(ll2.net)
   const windowStart = mapT0(ll2.window_start)
   const windowEnd = mapT0(ll2.window_end)
   const status = mapStatus(ll2.status.abbrev)
   const ll2StatusId = ll2.status.id
-  const timeline = ll2.flightplan?.map(e => ({
-    label: e.description,
+  const timeline = ll2.timeline?.map(e => ({
+    label: e.type.abbrev,
     t_offset_s: parseRelativeTime(e.relative_time),
   })) ?? []
 
