@@ -33,7 +33,10 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     rocket: launch.rocket,
     pad: launch.pad,
     t0: launch.t0 ?? null,
+    window_start: null,
+    window_end: null,
     status: launch.status,
+    ll2_status_id: 1,
     has_timeline: hasTimeline ? 1 : 0,
   })
 

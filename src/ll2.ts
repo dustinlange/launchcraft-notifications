@@ -1,7 +1,7 @@
 // Launch Library 2 API client
 // Docs: https://ll.thespacedevs.com/docs/
 
-const LL2_BASE = 'https://ll.thespacedevs.com/2.3.0'
+const LL2_BASE = 'https://ll.thespacedevs.com/2.2.0'
 
 // Subset of the LL2 launch object we care about
 export interface LL2Launch {
