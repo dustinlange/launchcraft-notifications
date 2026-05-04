@@ -3,6 +3,7 @@ export interface Launch {
   name: string
   rocket: string
   pad: string
+  provider: string | null
   t0: number | null
   window_start: number | null
   window_end: number | null
@@ -42,18 +43,29 @@ export function getLaunch(db: D1Database, id: string) {
 
 export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'>) {
   return db.prepare(`
-    INSERT INTO launches (id, name, rocket, pad, t0, window_start, window_end, status, ll2_status_id, has_timeline, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO launches (id, name, rocket, pad, provider, t0, window_start, window_end, status, ll2_status_id, has_timeline, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name, rocket = excluded.rocket, pad = excluded.pad,
+      provider = COALESCE(excluded.provider, provider),
       t0 = excluded.t0, window_start = excluded.window_start, window_end = excluded.window_end,
       status = excluded.status, ll2_status_id = excluded.ll2_status_id,
       has_timeline = excluded.has_timeline, last_updated = unixepoch()
   `).bind(
-    launch.id, launch.name, launch.rocket, launch.pad,
+    launch.id, launch.name, launch.rocket, launch.pad, launch.provider,
     launch.t0, launch.window_start, launch.window_end,
     launch.status, launch.ll2_status_id, launch.has_timeline
   ).run()
+}
+
+export function getActiveSubscriptionsForUser(db: D1Database, userId: string) {
+  return db.prepare(`
+    SELECT s.launch_id, l.name, l.provider
+    FROM subscriptions s
+    JOIN launches l ON l.id = s.launch_id
+    WHERE s.user_id = ?
+      AND l.status NOT IN ('success', 'failure', 'scrub')
+  `).bind(userId).all<{ launch_id: string; name: string; provider: string | null }>()
 }
 
 export function getSubscriptionsForLaunch(db: D1Database, launchId: string) {

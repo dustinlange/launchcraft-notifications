@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS launches (
   t0            INTEGER,            -- unix timestamp; NULL if NET not confirmed
   window_start  INTEGER,            -- launch window open (unix timestamp)
   window_end    INTEGER,            -- launch window close (unix timestamp)
+  provider      TEXT,                         -- launch service provider name e.g. "SpaceX"
   status        TEXT NOT NULL DEFAULT 'go',  -- go | hold | scrub | success | failure
   ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- raw LL2 status ID passed through to iOS widget
   has_timeline     INTEGER NOT NULL DEFAULT 0,

@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { handleRegister, handleActivityToken, handlePushToStartToken } from './handlers/register'
+import { handleRegister, handleActivityToken, handlePushToStartToken, handleGetSubscriptions } from './handlers/register'
 import { handleWebhook } from './handlers/webhook'
 import { dispatchTimelineEvents } from './handlers/timeline'
 import { pollNoTimelineLaunches } from './handlers/poller'
@@ -21,6 +21,7 @@ export interface Env {
 
 const app = new Hono<{ Bindings: Env }>()
 
+app.get('/subscriptions', handleGetSubscriptions)
 app.post('/register', handleRegister)
 app.post('/activity-token', handleActivityToken)
 app.post('/push-to-start-token', handlePushToStartToken)

@@ -32,6 +32,7 @@ async function syncLaunch(env: Env, ll2: {
   status: { id: number; abbrev: string }
   rocket: { configuration: { name: string } }
   pad: { name: string; location: { name: string } }
+  launch_service_provider: { name: string } | null
   timeline: Array<{ type: { abbrev: string }; relative_time: string }> | null
 }) {
   const t0 = mapT0(ll2.net)
@@ -52,6 +53,7 @@ async function syncLaunch(env: Env, ll2: {
     name: ll2.name,
     rocket: ll2.rocket.configuration.name,
     pad: `${ll2.pad.name}, ${ll2.pad.location.name}`,
+    provider: ll2.launch_service_provider?.name ?? null,
     t0,
     window_start: windowStart,
     window_end: windowEnd,

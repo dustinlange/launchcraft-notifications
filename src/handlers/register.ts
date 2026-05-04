@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, updateActivityToken, upsertTimelineEvents, updatePushToStartToken, markStartDispatched } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, updateActivityToken, upsertTimelineEvents, updatePushToStartToken, markStartDispatched, getActiveSubscriptionsForUser } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -38,6 +38,7 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     name: launch.name,
     rocket: launch.rocket,
     pad: launch.pad,
+    provider: null,
     t0: launch.t0 ?? null,
     window_start: null,
     window_end: null,
@@ -104,6 +105,23 @@ export async function handleActivityToken(c: Context<{ Bindings: Env }>) {
   await updateActivityToken(c.env.DB, userId, launchId, activityToken, activityId)
 
   return c.json({ ok: true })
+}
+
+// GET /subscriptions?userId=<id>
+// Returns active (non-terminal) launch IDs the user is subscribed to
+export async function handleGetSubscriptions(c: Context<{ Bindings: Env }>) {
+  const userId = c.req.query('userId')
+  if (!userId) return c.json({ error: 'missing userId' }, 400)
+
+  const { results } = await getActiveSubscriptionsForUser(c.env.DB, userId)
+  return c.json({
+    launchIds: results.map(r => r.launch_id),
+    subscriptions: results.map(r => ({
+      launchId: r.launch_id,
+      name: r.name,
+      provider: r.provider ?? null,
+    })),
+  })
 }
 
 // POST /push-to-start-token
