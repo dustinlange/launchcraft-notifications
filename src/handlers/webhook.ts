@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt } from '../db/queries'
 import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
 
 // POST /webhook
@@ -34,10 +34,16 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
     status: body.status,
     ll2_status_id: body.ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
+    success_at: null,
+    end_dispatched: 0,
   })
 
   if (hasTimeline && body.t0 && body.timeline) {
     await upsertTimelineEvents(c.env.DB, body.id, body.timeline, body.t0)
+  }
+
+  if (body.status === 'success') {
+    await markSuccessAt(c.env.DB, body.id, Math.floor(Date.now() / 1000))
   }
 
   if (!prev) return c.json({ ok: true })

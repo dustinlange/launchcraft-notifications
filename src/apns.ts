@@ -140,6 +140,32 @@ export async function pushLiveActivityUpdate(
   return sendApns(kv, config, activityToken, 'liveactivity', topic, { aps })
 }
 
+export async function pushLiveActivityStart(
+  kv: KVNamespace,
+  config: ApnsConfig,
+  pushToStartToken: string,
+  params: {
+    attributes: Record<string, unknown>
+    contentState: LaunchContentState
+    alertTitle: string
+    alertBody: string
+    staleDate?: number
+  }
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const topic = `${config.bundleId}.push-type.liveactivity`
+  const aps: Record<string, unknown> = {
+    timestamp: Math.floor(Date.now() / 1000),
+    event: 'start',
+    'content-state': params.contentState,
+    'attributes-type': 'LaunchActivityAttributes',
+    attributes: params.attributes,
+    alert: { title: params.alertTitle, body: params.alertBody },
+  }
+  if (params.staleDate) aps['stale-date'] = params.staleDate
+
+  return sendApns(kv, config, pushToStartToken, 'liveactivity', topic, { aps })
+}
+
 export async function pushAlertNotification(
   kv: KVNamespace,
   config: ApnsConfig,

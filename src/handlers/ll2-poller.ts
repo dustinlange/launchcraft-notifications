@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt } from '../db/queries'
 import { createLL2Client, mapStatus, mapT0, parseRelativeTime } from '../ll2'
 import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -58,10 +58,16 @@ async function syncLaunch(env: Env, ll2: {
     status,
     ll2_status_id: ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
+    success_at: null,
+    end_dispatched: 0,
   })
 
   if (hasTimeline && t0) {
     await upsertTimelineEvents(env.DB, ll2.id, timeline, t0)
+  }
+
+  if (status === 'success') {
+    await markSuccessAt(env.DB, ll2.id, Math.floor(Date.now() / 1000))
   }
 
   // No previous record means no subscribers yet — nothing to notify
