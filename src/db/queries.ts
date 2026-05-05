@@ -166,7 +166,10 @@ export function upsertTimelineEvents(db: D1Database, launchId: string, events: A
     db.prepare(`
       INSERT INTO timeline_events (launch_id, label, t_offset_s, fire_at)
       VALUES (?, ?, ?, ?)
-      ON CONFLICT DO NOTHING
+      ON CONFLICT(launch_id, t_offset_s) DO UPDATE SET
+        label = excluded.label,
+        fire_at = excluded.fire_at,
+        sent_at = CASE WHEN excluded.fire_at > unixepoch() THEN NULL ELSE sent_at END
     `).bind(launchId, e.label, e.t_offset_s, t0 + e.t_offset_s)
   )
   return db.batch(stmts)
