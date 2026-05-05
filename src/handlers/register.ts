@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, updateActivityToken, upsertTimelineEvents, updatePushToStartToken, markStartDispatched, getActiveSubscriptionsForUser } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, markStartDispatched, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -39,6 +39,7 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     rocket: launch.rocket,
     pad: launch.pad,
     provider: null,
+    provider_id: null,
     t0: launch.t0 ?? null,
     window_start: null,
     window_end: null,
@@ -53,18 +54,18 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     await upsertTimelineEvents(c.env.DB, launch.id, launch.timeline, launch.t0)
   }
 
+  await upsertUserDevice(c.env.DB, userId, deviceToken, pushToStartToken ?? null)
+
   await upsertSubscription(c.env.DB, {
     launch_id: launch.id,
-    device_token: deviceToken,
     user_id: userId,
-    push_to_start_token: pushToStartToken ?? null,
     attributes_json: attributesJson ?? null,
   })
 
   // Immediately sync from LL2 so the DB has fresh data without waiting for the next poll
   c.executionCtx.waitUntil(syncLaunchById(c.env, launch.id))
 
-  // Send push-to-start immediately if T-0 is within 24 hours
+  // Send push-to-start immediately if T-0 is within 1 hour
   if (pushToStartToken && attributesJson && launch.t0) {
     const now = Math.floor(Date.now() / 1000)
     if (launch.t0 - now <= START_WINDOW_S) {
@@ -124,8 +125,19 @@ export async function handleGetSubscriptions(c: Context<{ Bindings: Env }>) {
   })
 }
 
+// DELETE /subscription
+// Called when the user unsubscribes from a launch
+export async function handleUnsubscribe(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; launchId: string }>()
+  const { userId, launchId } = body
+  if (!userId || !launchId) return c.json({ error: 'missing required fields' }, 400)
+
+  await deleteSubscription(c.env.DB, userId, launchId)
+  return c.json({ ok: true })
+}
+
 // POST /push-to-start-token
-// Called when the device's push-to-start token rotates; updates all subscriptions for this user
+// Called when the device's push-to-start token rotates
 export async function handlePushToStartToken(c: Context<{ Bindings: Env }>) {
   const body = await c.req.json<{ userId: string; pushToStartToken: string }>()
   const { userId, pushToStartToken } = body
@@ -133,7 +145,38 @@ export async function handlePushToStartToken(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'missing required fields' }, 400)
   }
 
-  await updatePushToStartToken(c.env.DB, userId, pushToStartToken)
+  await updatePushToStartTokenForUser(c.env.DB, userId, pushToStartToken)
+  // Reset start_dispatched so we can retry push-to-start with the new token
+  await c.env.DB.prepare('UPDATE subscriptions SET start_dispatched = 0 WHERE user_id = ?').bind(userId).run()
+  return c.json({ ok: true })
+}
+
+// GET /provider-subscriptions?userId=<id>
+export async function handleGetProviderSubscriptions(c: Context<{ Bindings: Env }>) {
+  const userId = c.req.query('userId')
+  if (!userId) return c.json({ error: 'missing userId' }, 400)
+
+  const { results } = await getProviderSubscriptionsForUser(c.env.DB, userId)
+  return c.json({ providerIds: results.map(r => r.provider_id) })
+}
+
+// POST /provider-subscription
+export async function handleSubscribeToProvider(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; providerId: number }>()
+  const { userId, providerId } = body
+  if (!userId || !providerId) return c.json({ error: 'missing required fields' }, 400)
+
+  await upsertProviderSubscription(c.env.DB, userId, providerId)
+  return c.json({ ok: true })
+}
+
+// DELETE /provider-subscription
+export async function handleUnsubscribeFromProvider(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; providerId: number }>()
+  const { userId, providerId } = body
+  if (!userId || !providerId) return c.json({ error: 'missing required fields' }, 400)
+
+  await deleteProviderSubscription(c.env.DB, userId, providerId)
   return c.json({ ok: true })
 }
 

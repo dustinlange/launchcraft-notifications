@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS launches (
   window_start  INTEGER,            -- launch window open (unix timestamp)
   window_end    INTEGER,            -- launch window close (unix timestamp)
   provider      TEXT,                         -- launch service provider name e.g. "SpaceX"
+  provider_id   INTEGER,                      -- LL2 agency ID; stable foreign key for subscriptions
   status        TEXT NOT NULL DEFAULT 'go',  -- go | hold | scrub | success | failure
   ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- raw LL2 status ID passed through to iOS widget
   has_timeline     INTEGER NOT NULL DEFAULT 0,
@@ -16,17 +17,33 @@ CREATE TABLE IF NOT EXISTS launches (
   last_updated     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+-- Per-user device tokens (decoupled from per-launch subscriptions)
+CREATE TABLE IF NOT EXISTS user_devices (
+  user_id             TEXT PRIMARY KEY,
+  device_token        TEXT NOT NULL,
+  push_to_start_token TEXT,
+  updated_at          INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Provider-level subscriptions (auto-fan-out to per-launch on new launches)
+CREATE TABLE IF NOT EXISTS provider_subscriptions (
+  user_id     TEXT    NOT NULL,
+  provider_id INTEGER NOT NULL,
+  PRIMARY KEY (user_id, provider_id)
+);
+
 -- Per-user subscriptions to a launch
--- One row per (user, launch) pair; holds both APNs token types
+-- One row per (user, launch) pair
 CREATE TABLE IF NOT EXISTS subscriptions (
   id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
   launch_id         TEXT NOT NULL REFERENCES launches(id) ON DELETE CASCADE,
-  device_token      TEXT NOT NULL,   -- standard APNs token for alert notifications
   activity_token      TEXT,            -- Live Activity push token; NULL until activity started
   activity_id         TEXT,            -- ActivityKit activity identifier
-  push_to_start_token TEXT,            -- token for remotely starting a Live Activity
   attributes_json     TEXT,            -- JSON-encoded LaunchActivityAttributes for push-to-start
   start_dispatched    INTEGER NOT NULL DEFAULT 0,
+  reminded_24h        INTEGER NOT NULL DEFAULT 0,
+  reminded_1h         INTEGER NOT NULL DEFAULT 0,
+  reminded_10m        INTEGER NOT NULL DEFAULT 0,
   user_id             TEXT NOT NULL,
   created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
   UNIQUE(launch_id, user_id)
@@ -41,6 +58,15 @@ CREATE TABLE IF NOT EXISTS timeline_events (
   fire_at     INTEGER,               -- absolute unix timestamp; computed from t0
   sent_at     INTEGER,               -- NULL until dispatched
   UNIQUE(launch_id, t_offset_s)
+);
+
+-- Per-user notification preferences (all reminders enabled by default)
+CREATE TABLE IF NOT EXISTS user_preferences (
+  user_id      TEXT PRIMARY KEY,
+  remind_24h   INTEGER NOT NULL DEFAULT 1,
+  remind_1h    INTEGER NOT NULL DEFAULT 1,
+  remind_10m   INTEGER NOT NULL DEFAULT 1,
+  updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);

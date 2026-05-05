@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, fanOutProviderSubscriptions, resetReminderFlags } from '../db/queries'
 import { createLL2Client, mapStatus, mapT0, parseRelativeTime } from '../ll2'
 import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -38,7 +38,7 @@ async function syncLaunch(env: Env, ll2: {
   status: { id: number; abbrev: string }
   rocket: { configuration: { name: string } }
   pad: { name: string; location: { name: string } }
-  launch_service_provider: { name: string } | null
+  launch_service_provider: { id: number; name: string } | null
   timeline: Array<{ type: { abbrev: string }; relative_time: string }> | null
 }) {
   const t0 = mapT0(ll2.net)
@@ -60,6 +60,7 @@ async function syncLaunch(env: Env, ll2: {
     rocket: ll2.rocket.configuration.name,
     pad: `${ll2.pad.name}, ${ll2.pad.location.name}`,
     provider: ll2.launch_service_provider?.name ?? null,
+    provider_id: ll2.launch_service_provider?.id ?? null,
     t0,
     window_start: windowStart,
     window_end: windowEnd,
@@ -74,6 +75,11 @@ async function syncLaunch(env: Env, ll2: {
     await upsertTimelineEvents(env.DB, ll2.id, timeline, t0)
   }
 
+  // Fan out provider-level subscriptions to per-launch subscriptions
+  if (ll2.launch_service_provider?.id) {
+    await fanOutProviderSubscriptions(env.DB, ll2.id, ll2.launch_service_provider.id)
+  }
+
   if (status === 'success' || status === 'failure' || status === 'scrub') {
     await markSuccessAt(env.DB, ll2.id, Math.floor(Date.now() / 1000))
   }
@@ -86,6 +92,10 @@ async function syncLaunch(env: Env, ll2: {
   const isTerminal = status === 'success' || status === 'failure' || status === 'scrub'
 
   if (!statusChanged && !t0Changed) return
+
+  if (t0Changed) {
+    await resetReminderFlags(env.DB, ll2.id)
+  }
 
   const apnsConfig = getApnsConfig(env)
   const { results: subs } = await getSubscriptionsForLaunch(env.DB, ll2.id)

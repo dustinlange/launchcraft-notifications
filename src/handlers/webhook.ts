@@ -29,6 +29,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
   await upsertLaunch(c.env.DB, {
     id: body.id, name: body.name, rocket: body.rocket, pad: body.pad,
     provider: null,
+    provider_id: null,
     t0: body.t0 ?? null,
     window_start: body.windowStart ?? null,
     window_end: body.windowEnd ?? null,
