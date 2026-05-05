@@ -13,7 +13,7 @@ binding = "KV"
 id = "17e1e9861c804bb1981e032cbba12eb1"           # after: wrangler kv namespace create launchcraft-kv
 
 # Runs every minute — dispatches due timeline events
-[[triggers]]
+[triggers]
 crons = ["* * * * *"]
 
 # Secrets (set via: wrangler secret put SECRET_NAME)

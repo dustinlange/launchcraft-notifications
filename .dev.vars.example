@@ -1,0 +1,9 @@
+LL2_API_KEY=
+APNS_KEY_ID=
+APNS_TEAM_ID=
+BUNDLE_ID=com.yourname.launchcraft
+APNS_ENV=sandbox
+WEBHOOK_SECRET=localsecret
+APNS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+<paste your .p8 key contents here>
+-----END PRIVATE KEY-----"

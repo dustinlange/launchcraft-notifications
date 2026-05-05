@@ -1,4 +1,128 @@
-# Launchcraft Live Activity — System Workflow
+# Launchcraft Notifications
+
+## Local Development
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org) 18+
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/): `npm install -g wrangler`
+- A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free tier is fine for local dev)
+
+### 1. Install dependencies
+
+```bash
+npm install
+```
+
+### 2. Create `.dev.vars`
+
+Copy the example and fill in your values:
+
+```bash
+cp .dev.vars.example .dev.vars
+```
+
+| Variable | Description |
+|---|---|
+| `LL2_API_KEY` | Launch Library 2 API key |
+| `APNS_KEY_ID` | 10-character APNs key ID from Apple Developer |
+| `APNS_TEAM_ID` | 10-character Apple Developer team ID |
+| `BUNDLE_ID` | App bundle ID e.g. `com.yourname.launchcraft` |
+| `APNS_ENV` | `sandbox` for development, `production` for release |
+| `WEBHOOK_SECRET` | Any string — used to authenticate `/webhook` calls |
+| `APNS_PRIVATE_KEY` | Full contents of your `.p8` file including header/footer |
+
+For `APNS_PRIVATE_KEY`, wrap the multi-line value in quotes:
+```
+APNS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+MIGHAgEA...
+-----END PRIVATE KEY-----"
+```
+
+### 3. Set up the local database
+
+```bash
+npx wrangler d1 execute launchcraft-db --local --file src/db/schema.sql
+```
+
+### 4. Start the dev server
+
+```bash
+npx wrangler dev --test-scheduled
+```
+
+The server runs at `http://localhost:8787`.
+
+### 5. Test the endpoints
+
+**Register a subscription:**
+```bash
+curl -X POST http://localhost:8787/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": "test-user",
+    "deviceToken": "abc123",
+    "launch": {
+      "id": "your-launch-id",
+      "name": "Test Launch",
+      "rocket": "Falcon 9",
+      "pad": "LC-39A",
+      "t0": null,
+      "status": "go"
+    }
+  }'
+```
+
+**Trigger the cron manually:**
+```bash
+curl "http://localhost:8787/__scheduled"
+```
+
+**Send a webhook update:**
+```bash
+curl -X POST http://localhost:8787/webhook \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: localsecret" \
+  -d '{
+    "id": "your-launch-id",
+    "name": "Test Launch",
+    "rocket": "Falcon 9",
+    "pad": "LC-39A",
+    "t0": '"$(date -v+1H +%s)"',
+    "windowStart": null,
+    "windowEnd": null,
+    "ll2StatusId": 1,
+    "status": "go"
+  }'
+```
+
+**Query the database:**
+```bash
+npx wrangler d1 execute launchcraft-db --local --command "SELECT * FROM launches"
+npx wrangler d1 execute launchcraft-db --local --command "SELECT * FROM subscriptions"
+npx wrangler d1 execute launchcraft-db --local --command "SELECT * FROM timeline_events"
+```
+
+### 6. Deploy to production
+
+```bash
+npx wrangler deploy
+```
+
+Secrets must be set separately (they are not read from `.dev.vars` in production):
+```bash
+npx wrangler secret put LL2_API_KEY
+npx wrangler secret put APNS_PRIVATE_KEY
+npx wrangler secret put APNS_KEY_ID
+npx wrangler secret put APNS_TEAM_ID
+npx wrangler secret put BUNDLE_ID
+npx wrangler secret put APNS_ENV
+npx wrangler secret put WEBHOOK_SECRET
+```
+
+---
+
+## System Workflow
 
 ## Registration (user subscribes to a launch)
 
