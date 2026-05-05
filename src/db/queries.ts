@@ -153,6 +153,14 @@ export function markEventSent(db: D1Database, eventId: string) {
     .bind(eventId).run()
 }
 
+export function getSubscribedLaunchIds(db: D1Database) {
+  return db.prepare(`
+    SELECT DISTINCT launch_id FROM subscriptions
+    JOIN launches ON launches.id = subscriptions.launch_id
+    WHERE launches.status NOT IN ('success', 'failure', 'scrub')
+  `).all<{ launch_id: string }>()
+}
+
 export function getActiveNoTimelineLaunches(db: D1Database) {
   return db.prepare(`
     SELECT * FROM launches

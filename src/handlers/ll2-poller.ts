@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds } from '../db/queries'
 import { createLL2Client, mapStatus, mapT0, parseRelativeTime } from '../ll2'
 import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -10,6 +10,12 @@ export async function pollLL2(env: Env) {
   const client = createLL2Client(env.LL2_API_KEY)
   const launches = await client.getUpcomingLaunches(50)
   await Promise.allSettled(launches.map(ll2 => syncLaunch(env, ll2)))
+
+  // Also sync any subscribed launches not covered by the upcoming batch
+  const coveredIds = new Set(launches.map(l => l.id))
+  const { results: subscribed } = await getSubscribedLaunchIds(env.DB)
+  const missed = subscribed.filter(r => !coveredIds.has(r.launch_id))
+  await Promise.allSettled(missed.map(r => syncLaunchById(env, r.launch_id)))
 }
 
 // Fetch a single launch by ID — called when the app registers a subscription
