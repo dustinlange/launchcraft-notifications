@@ -71,7 +71,7 @@ export function createLL2Client(apiKey: string): LL2Client {
   return {
     async getUpcomingLaunches(limit = 50): Promise<LL2Launch[]> {
       // status=1 (Go), 2 (TBD), 3 (TBC), 8 (Hold), 5 (In Flight)
-      const url = `${LL2_BASE}/launches/upcoming/?limit=${limit}&ordering=net&status=1,2,3,5,8&mode=detailed`
+      const url = `${LL2_BASE}/launches/upcoming/?limit=${limit}&ordering=net&status__ids=1,2,3,5,8&mode=detailed`
       console.log(`LL2 GET ${url}`)
       const res = await fetch(url, { headers })
       console.log(`LL2 upcoming response: ${res.status}`)
