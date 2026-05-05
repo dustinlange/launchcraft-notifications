@@ -72,14 +72,19 @@ export function createLL2Client(apiKey: string): LL2Client {
     async getUpcomingLaunches(limit = 50): Promise<LL2Launch[]> {
       // status=1 (Go), 2 (TBD), 3 (TBC), 8 (Hold), 5 (In Flight)
       const url = `${LL2_BASE}/launches/upcoming/?limit=${limit}&ordering=net&status=1,2,3,5,8&mode=detailed`
+      console.log(`LL2 GET ${url}`)
       const res = await fetch(url, { headers })
+      console.log(`LL2 upcoming response: ${res.status}`)
       if (!res.ok) throw new Error(`LL2 upcoming fetch failed: ${res.status}`)
       const data = await res.json<{ results: LL2Launch[] }>()
       return data.results
     },
 
     async getLaunch(id: string): Promise<LL2Launch | null> {
-      const res = await fetch(`${LL2_BASE}/launches/${id}/?mode=detailed`, { headers })
+      const url = `${LL2_BASE}/launches/${id}/?mode=detailed`
+      console.log(`LL2 GET ${url}`)
+      const res = await fetch(url, { headers })
+      console.log(`LL2 launch/${id} response: ${res.status}`)
       if (res.status === 404) return null
       if (!res.ok) throw new Error(`LL2 launch fetch failed: ${res.status}`)
       return res.json<LL2Launch>()
