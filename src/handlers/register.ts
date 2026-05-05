@@ -5,7 +5,7 @@ import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
 
-const START_WINDOW_S = 24 * 60 * 60  // send push-to-start if T-0 is within 24 hours
+const START_WINDOW_S = 60 * 60  // send push-to-start if T-0 is within 1 hour
 
 // POST /register
 // Called when user subscribes to a launch in the app
@@ -156,11 +156,13 @@ export async function sendPushToStart(
   try {
     const attributes = JSON.parse(attributesJson)
     const apnsConfig = getApnsConfig(env)
+    const now = Math.floor(Date.now() / 1000)
     const result = await pushLiveActivityStart(env.KV, apnsConfig, pushToStartToken, {
       attributes,
       contentState,
       alertTitle: launchName,
       alertBody: 'Live Activity started',
+      dismissalDate: now + 8 * 60 * 60,
       staleDate: contentState.netDate ? contentState.netDate + 30 * 60 : undefined,
     })
 

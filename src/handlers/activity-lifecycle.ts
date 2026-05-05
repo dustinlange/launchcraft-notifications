@@ -4,7 +4,7 @@ import { pushLiveActivityUpdate } from '../apns'
 import { getApnsConfig } from './webhook'
 import { sendPushToStart } from './register'
 
-const START_WINDOW_S = 24 * 60 * 60  // start activities when T-0 is within 24 hours
+const START_WINDOW_S = 60 * 60  // start activities when T-0 is within 1 hour
 
 // Runs every minute via cron — starts Live Activities for subscriptions within 24h of launch
 export async function dispatchActivityStarts(env: Env) {

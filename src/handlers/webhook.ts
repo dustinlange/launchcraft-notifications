@@ -43,7 +43,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
     await upsertTimelineEvents(c.env.DB, body.id, body.timeline, body.t0)
   }
 
-  if (body.status === 'success') {
+  if (body.status === 'success' || body.status === 'failure' || body.status === 'scrub') {
     await markSuccessAt(c.env.DB, body.id, Math.floor(Date.now() / 1000))
   }
 

@@ -149,6 +149,7 @@ export async function pushLiveActivityStart(
     contentState: LaunchContentState
     alertTitle: string
     alertBody: string
+    dismissalDate: number
     staleDate?: number
   }
 ): Promise<{ ok: boolean; status: number; body: string }> {
@@ -160,6 +161,7 @@ export async function pushLiveActivityStart(
     'attributes-type': 'LaunchActivityAttributes',
     attributes: params.attributes,
     alert: { title: params.alertTitle, body: params.alertBody },
+    'dismissal-date': params.dismissalDate,
   }
   if (params.staleDate) aps['stale-date'] = params.staleDate
 

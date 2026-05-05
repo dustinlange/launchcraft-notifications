@@ -68,7 +68,7 @@ async function syncLaunch(env: Env, ll2: {
     await upsertTimelineEvents(env.DB, ll2.id, timeline, t0)
   }
 
-  if (status === 'success') {
+  if (status === 'success' || status === 'failure' || status === 'scrub') {
     await markSuccessAt(env.DB, ll2.id, Math.floor(Date.now() / 1000))
   }
 
