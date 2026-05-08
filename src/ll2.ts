@@ -23,23 +23,6 @@ export interface LL2TimelineEvent {
   relative_time: string  // ISO 8601 duration e.g. "-PT38M" or "PT1M20S"
 }
 
-// LL2 status abbrevs → our status
-const STATUS_MAP: Record<string, 'go' | 'hold' | 'scrub' | 'success' | 'failure'> = {
-  'Go':              'go',
-  'TBD':             'go',
-  'TBC':             'go',
-  'Hold':            'hold',
-  'In Flight':       'go',
-  'Success':         'success',
-  'Failure':         'failure',
-  'Partial Failure': 'failure',
-  'Scrub':           'scrub',
-}
-
-export function mapStatus(abbrev: string): 'go' | 'hold' | 'scrub' | 'success' | 'failure' {
-  return STATUS_MAP[abbrev] ?? 'go'
-}
-
 export function mapT0(net: string | null): number | null {
   if (!net) return null
   const ts = Date.parse(net)

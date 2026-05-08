@@ -1,25 +1,20 @@
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, fanOutProviderSubscriptions, resetReminderFlags } from '../db/queries'
-import { createLL2Client, mapStatus, mapT0, parseRelativeTime } from '../ll2'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, fanOutProviderSubscriptions, resetReminderFlags, TERMINAL_IDS, LL2_STATUS } from '../db/queries'
+import { createLL2Client, mapT0, parseRelativeTime } from '../ll2'
 import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
 
-// Runs every 5 minutes via cron modulo check in index.ts
-// Fetches upcoming launches from LL2, diffs against DB, dispatches updates
 export async function pollLL2(env: Env) {
   const client = createLL2Client(env.LL2_API_KEY)
   const launches = await client.getUpcomingLaunches(50)
   await Promise.allSettled(launches.map(ll2 => syncLaunch(env, ll2)))
 
-  // Also sync any subscribed launches not covered by the upcoming batch
   const coveredIds = new Set(launches.map(l => l.id))
   const { results: subscribed } = await getSubscribedLaunchIds(env.DB)
   const missed = subscribed.filter(r => !coveredIds.has(r.launch_id))
   await Promise.allSettled(missed.map(r => syncLaunchById(env, r.launch_id)))
 }
 
-// Fetch a single launch by ID — called when the app registers a subscription
-// so the DB is immediately up-to-date without waiting for the next poll cycle
 export async function syncLaunchById(env: Env, id: string) {
   try {
     const client = createLL2Client(env.LL2_API_KEY)
@@ -44,7 +39,6 @@ async function syncLaunch(env: Env, ll2: {
   const t0 = mapT0(ll2.net)
   const windowStart = mapT0(ll2.window_start)
   const windowEnd = mapT0(ll2.window_end)
-  const status = mapStatus(ll2.status.abbrev)
   const ll2StatusId = ll2.status.id
   const timeline = ll2.timeline?.map(e => ({
     label: e.type.abbrev,
@@ -64,7 +58,6 @@ async function syncLaunch(env: Env, ll2: {
     t0,
     window_start: windowStart,
     window_end: windowEnd,
-    status,
     ll2_status_id: ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
     success_at: null,
@@ -75,21 +68,19 @@ async function syncLaunch(env: Env, ll2: {
     await upsertTimelineEvents(env.DB, ll2.id, timeline, t0)
   }
 
-  // Fan out provider-level subscriptions to per-launch subscriptions
   if (ll2.launch_service_provider?.id) {
     await fanOutProviderSubscriptions(env.DB, ll2.id, ll2.launch_service_provider.id)
   }
 
-  if (status === 'success' || status === 'failure' || status === 'scrub') {
+  if (TERMINAL_IDS.includes(ll2StatusId as any)) {
     await markSuccessAt(env.DB, ll2.id, Math.floor(Date.now() / 1000))
   }
 
-  // No previous record means no subscribers yet — nothing to notify
   if (!prev) return
 
-  const statusChanged = prev.status !== status
+  const statusChanged = prev.ll2_status_id !== ll2StatusId
   const t0Changed = prev.t0 !== t0
-  const isTerminal = status === 'success' || status === 'failure' || status === 'scrub'
+  const isTerminal = TERMINAL_IDS.includes(ll2StatusId as any)
 
   if (!statusChanged && !t0Changed) return
 
@@ -113,7 +104,7 @@ async function syncLaunch(env: Env, ll2: {
           statusId: ll2StatusId,
         },
         alertTitle: statusChanged
-          ? `${ll2.name}: ${statusLabel(status)}`
+          ? `${ll2.name}: ${statusLabel(ll2StatusId)}`
           : `${ll2.name}: Schedule Updated`,
         alertBody: t0Changed && t0 ? `New window: ${new Date(t0 * 1000).toUTCString()}` : undefined,
         dismissalDate: isTerminal ? Math.floor(Date.now() / 1000) + 60 * 30 : undefined,
@@ -122,36 +113,46 @@ async function syncLaunch(env: Env, ll2: {
 
     if (statusChanged) {
       await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
-        title: `${ll2.name}: ${statusLabel(status)}`,
-        body: statusBody(status, ll2.rocket.configuration.name),
+        title: isTerminal ? 'Status Updated' : `${ll2.name}: ${statusLabel(ll2StatusId)}`,
+        body: statusBody(ll2StatusId, ll2.name, ll2.rocket.configuration.name),
         launchId: ll2.id,
         type: 'status_change',
       })
     } else if (t0Changed && t0) {
       await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
-        title: `${ll2.name}: Schedule Updated`,
-        body: `New launch window: ${new Date(t0 * 1000).toUTCString()}`,
+        title: 'Schedule Changed',
+        body: new Date(t0 * 1000).toUTCString(),
         launchId: ll2.id,
         type: 'schedule_change',
+        t0,
+        launchName: ll2.name,
       })
     }
   }))
 }
 
-function statusLabel(s: string) {
-  const m: Record<string, string> = {
-    go: 'Go for Launch', hold: 'Launch Hold', scrub: 'Scrubbed',
-    success: 'Launch Successful', failure: 'Launch Failed',
+function statusLabel(id: number): string {
+  const m: Record<number, string> = {
+    [LL2_STATUS.GO]:              'Go for Launch',
+    [LL2_STATUS.TBD]:             'Status: TBD',
+    [LL2_STATUS.TBC]:             'Status: TBC',
+    [LL2_STATUS.HOLD]:            'Launch Hold',
+    [LL2_STATUS.IN_FLIGHT]:       'In Flight',
+    [LL2_STATUS.SUCCESS]:         'Launch Successful',
+    [LL2_STATUS.FAILURE]:         'Launch Failed',
+    [LL2_STATUS.PARTIAL_FAILURE]: 'Partial Failure',
   }
-  return m[s] ?? s
+  return m[id] ?? `Status ${id}`
 }
 
-function statusBody(status: string, rocket: string) {
-  const m: Record<string, string> = {
-    hold: `${rocket} is currently on hold.`,
-    scrub: `${rocket} has been scrubbed. Check back for rescheduling.`,
-    success: `${rocket} has successfully launched!`,
-    failure: `${rocket} launch ended in failure.`,
+function statusBody(id: number, name: string, rocket: string): string {
+  const m: Record<number, string> = {
+    [LL2_STATUS.TBD]:             `${rocket} launch date is to be determined.`,
+    [LL2_STATUS.TBC]:             `${rocket} launch date is to be confirmed.`,
+    [LL2_STATUS.HOLD]:            `${rocket} is currently on hold.`,
+    [LL2_STATUS.SUCCESS]:         `${name} was successful!`,
+    [LL2_STATUS.FAILURE]:         `${name} has failed!`,
+    [LL2_STATUS.PARTIAL_FAILURE]: `${name} was a partial failure!`,
   }
-  return m[status] ?? `Launch status changed to ${status}.`
+  return m[id] ?? `Launch status changed.`
 }

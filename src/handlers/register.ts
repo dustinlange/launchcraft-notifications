@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, markStartDispatched, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -21,7 +21,7 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
       rocket: string
       pad: string
       t0: number | null
-      status: 'go' | 'hold' | 'scrub' | 'success' | 'failure'
+      ll2StatusId: number
       timeline?: Array<{ label: string; t_offset_s: number }>
     }
   }>()
@@ -43,8 +43,7 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     t0: launch.t0 ?? null,
     window_start: null,
     window_end: null,
-    status: launch.status,
-    ll2_status_id: 1,
+    ll2_status_id: launch.ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
     success_at: null,
     end_dispatched: 0,
@@ -76,7 +75,7 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
           windowEnd: null,
           currentEventName: null,
           currentEventDate: null,
-          statusId: 1,
+          statusId: launch.ll2StatusId,
         }, launch.name)
       )
     }
@@ -197,6 +196,13 @@ export async function sendPushToStart(
   launchName: string
 ) {
   try {
+    // Atomically claim the subscription before sending — prevents duplicate pushes
+    // from concurrent cron invocations or simultaneous /register calls.
+    const claim = await env.DB.prepare(
+      'UPDATE subscriptions SET start_dispatched = 1 WHERE user_id = ? AND launch_id = ? AND start_dispatched = 0'
+    ).bind(userId, launchId).run()
+    if (claim.meta.changes === 0) return
+
     const attributes = JSON.parse(attributesJson)
     const apnsConfig = getApnsConfig(env)
     const now = Math.floor(Date.now() / 1000)
@@ -209,13 +215,11 @@ export async function sendPushToStart(
       staleDate: contentState.netDate ? contentState.netDate + 30 * 60 : undefined,
     })
 
-    if (result.ok) {
-      // Find and mark the subscription so we don't send again
-      const { results } = await env.DB.prepare(
-        'SELECT id FROM subscriptions WHERE user_id = ? AND launch_id = ?'
-      ).bind(userId, launchId).all<{ id: string }>()
-      if (results[0]) await markStartDispatched(env.DB, results[0].id)
-    } else {
+    if (!result.ok) {
+      // Roll back the claim so the next cron cycle can retry
+      await env.DB.prepare(
+        'UPDATE subscriptions SET start_dispatched = 0 WHERE user_id = ? AND launch_id = ?'
+      ).bind(userId, launchId).run()
       console.error(`push-to-start failed for ${launchId}/${userId}: ${result.status} ${result.body}`)
     }
   } catch (err) {

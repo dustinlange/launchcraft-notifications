@@ -1,11 +1,9 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, TERMINAL_IDS, LL2_STATUS } from '../db/queries'
 import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
 
 // POST /webhook
-// Receives launch data updates from an external source
-// Secured with a shared WEBHOOK_SECRET header
 export async function handleWebhook(c: Context<{ Bindings: Env }>) {
   const secret = c.req.header('x-webhook-secret')
   if (secret !== c.env.WEBHOOK_SECRET) return c.json({ error: 'unauthorized' }, 401)
@@ -19,7 +17,6 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
     windowStart: number | null
     windowEnd: number | null
     ll2StatusId: number
-    status: 'go' | 'hold' | 'scrub' | 'success' | 'failure'
     timeline?: Array<{ label: string; t_offset_s: number }>
   }>()
 
@@ -33,7 +30,6 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
     t0: body.t0 ?? null,
     window_start: body.windowStart ?? null,
     window_end: body.windowEnd ?? null,
-    status: body.status,
     ll2_status_id: body.ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
     success_at: null,
@@ -44,15 +40,15 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
     await upsertTimelineEvents(c.env.DB, body.id, body.timeline, body.t0)
   }
 
-  if (body.status === 'success' || body.status === 'failure' || body.status === 'scrub') {
+  if (TERMINAL_IDS.includes(body.ll2StatusId as any)) {
     await markSuccessAt(c.env.DB, body.id, Math.floor(Date.now() / 1000))
   }
 
   if (!prev) return c.json({ ok: true })
 
-  const statusChanged = prev.status !== body.status
+  const statusChanged = prev.ll2_status_id !== body.ll2StatusId
   const t0Changed = prev.t0 !== body.t0
-  const isTerminal = body.status === 'success' || body.status === 'failure' || body.status === 'scrub'
+  const isTerminal = TERMINAL_IDS.includes(body.ll2StatusId as any)
 
   if (!statusChanged && !t0Changed) return c.json({ ok: true })
 
@@ -71,7 +67,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
           currentEventDate: null,
           statusId: body.ll2StatusId,
         },
-        alertTitle: statusChanged ? `${body.name}: ${statusLabel(body.status)}` : undefined,
+        alertTitle: statusChanged ? `${body.name}: ${statusLabel(body.ll2StatusId)}` : undefined,
         alertBody: t0Changed && body.t0 ? `Launch window updated` : undefined,
         dismissalDate: isTerminal ? Math.floor(Date.now() / 1000) + 60 * 30 : undefined,
       })
@@ -79,17 +75,19 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
 
     if (statusChanged) {
       await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
-        title: `${body.name}: ${statusLabel(body.status)}`,
-        body: launchStatusBody(body.status, body.rocket),
+        title: isTerminal ? 'Status Updated' : `${body.name}: ${statusLabel(body.ll2StatusId)}`,
+        body: statusBody(body.ll2StatusId, body.name, body.rocket),
         launchId: body.id,
         type: 'status_change',
       })
     } else if (t0Changed && body.t0) {
       await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
-        title: `${body.name}: Schedule Updated`,
-        body: `New launch window: ${new Date(body.t0 * 1000).toUTCString()}`,
+        title: 'Schedule Changed',
+        body: new Date(body.t0 * 1000).toUTCString(),
         launchId: body.id,
         type: 'schedule_change',
+        t0: body.t0,
+        launchName: body.name,
       })
     }
   }))
@@ -97,22 +95,30 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
   return c.json({ ok: true })
 }
 
-function statusLabel(status: string): string {
-  const labels: Record<string, string> = {
-    go: 'Go for Launch', hold: 'Launch Hold', scrub: 'Launch Scrubbed',
-    success: 'Launch Successful', failure: 'Launch Failed',
+function statusLabel(id: number): string {
+  const m: Record<number, string> = {
+    [LL2_STATUS.GO]:              'Go for Launch',
+    [LL2_STATUS.TBD]:             'Status: TBD',
+    [LL2_STATUS.TBC]:             'Status: TBC',
+    [LL2_STATUS.HOLD]:            'Launch Hold',
+    [LL2_STATUS.IN_FLIGHT]:       'In Flight',
+    [LL2_STATUS.SUCCESS]:         'Launch Successful',
+    [LL2_STATUS.FAILURE]:         'Launch Failed',
+    [LL2_STATUS.PARTIAL_FAILURE]: 'Partial Failure',
   }
-  return labels[status] ?? status
+  return m[id] ?? `Status ${id}`
 }
 
-function launchStatusBody(status: string, rocket: string): string {
-  const bodies: Record<string, string> = {
-    hold: `${rocket} is currently on hold.`,
-    scrub: `${rocket} has been scrubbed. Check back for rescheduling.`,
-    success: `${rocket} has successfully launched!`,
-    failure: `${rocket} launch ended in failure.`,
+function statusBody(id: number, name: string, rocket: string): string {
+  const m: Record<number, string> = {
+    [LL2_STATUS.TBD]:             `${rocket} launch date is to be determined.`,
+    [LL2_STATUS.TBC]:             `${rocket} launch date is to be confirmed.`,
+    [LL2_STATUS.HOLD]:            `${rocket} is currently on hold.`,
+    [LL2_STATUS.SUCCESS]:         `${name} was successful!`,
+    [LL2_STATUS.FAILURE]:         `${name} has failed!`,
+    [LL2_STATUS.PARTIAL_FAILURE]: `${name} was a partial failure!`,
   }
-  return bodies[status] ?? `Launch status changed to ${status}.`
+  return m[id] ?? `Launch status changed.`
 }
 
 export function getApnsConfig(env: Env) {

@@ -9,11 +9,10 @@ CREATE TABLE IF NOT EXISTS launches (
   window_end    INTEGER,            -- launch window close (unix timestamp)
   provider      TEXT,                         -- launch service provider name e.g. "SpaceX"
   provider_id   INTEGER,                      -- LL2 agency ID; stable foreign key for subscriptions
-  status        TEXT NOT NULL DEFAULT 'go',  -- go | hold | scrub | success | failure
-  ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- raw LL2 status ID passed through to iOS widget
+  ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
   has_timeline     INTEGER NOT NULL DEFAULT 0,
   success_at       INTEGER,                     -- unix timestamp when status first became 'success'
-  end_dispatched   INTEGER NOT NULL DEFAULT 0,  -- 1 after end push sent ~30min post-success
+  end_dispatched   INTEGER NOT NULL DEFAULT 0,  -- 1 after end push sent ~30min post terminal status
   last_updated     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -71,4 +70,4 @@ CREATE TABLE IF NOT EXISTS user_preferences (
 
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_launch ON subscriptions(launch_id);
-CREATE INDEX IF NOT EXISTS idx_launches_t0 ON launches(t0, status);
+CREATE INDEX IF NOT EXISTS idx_launches_t0 ON launches(t0);

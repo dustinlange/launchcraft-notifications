@@ -37,6 +37,8 @@ export interface AlertPayload {
   body: string
   launchId: string
   type: 'reminder' | 'status_change' | 'schedule_change'
+  t0?: number        // unix timestamp; included for schedule_change so iOS can format locally
+  launchName?: string
 }
 
 function base64url(buffer: ArrayBuffer | Uint8Array): string {
@@ -174,13 +176,17 @@ export async function pushAlertNotification(
   deviceToken: string,
   alert: AlertPayload
 ): Promise<{ ok: boolean; status: number; body: string }> {
-  const payload = {
+  const payload: Record<string, unknown> = {
     aps: {
       alert: { title: alert.title, body: alert.body },
       sound: 'default',
+      // Required for Notification Service Extension to run
+      ...(alert.type === 'schedule_change' ? { 'mutable-content': 1 } : {}),
     },
     launchId: alert.launchId,
     notificationType: alert.type,
+    ...(alert.t0 !== undefined ? { t0: alert.t0 } : {}),
+    ...(alert.launchName !== undefined ? { launchName: alert.launchName } : {}),
   }
 
   return sendApns(kv, config, deviceToken, 'alert', config.bundleId, payload)

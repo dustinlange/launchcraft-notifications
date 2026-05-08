@@ -1,3 +1,22 @@
+// LL2 status IDs used throughout for filtering
+// 1=Go, 2=TBD, 3=Success, 4=Failure, 5=Hold, 6=InFlight, 7=PartialFailure, 8=TBC
+export const LL2_STATUS = {
+  GO: 1,
+  TBD: 2,
+  SUCCESS: 3,
+  FAILURE: 4,
+  HOLD: 5,
+  IN_FLIGHT: 6,
+  PARTIAL_FAILURE: 7,
+  TBC: 8,
+} as const
+
+// Statuses that mean "confirmed go" — eligible for push-to-start, reminders, timeline dispatch
+export const CONFIRMED_GO_IDS = [LL2_STATUS.GO, LL2_STATUS.IN_FLIGHT]
+
+// Terminal statuses — live activity should end, subscription is done
+export const TERMINAL_IDS = [LL2_STATUS.SUCCESS, LL2_STATUS.FAILURE, LL2_STATUS.PARTIAL_FAILURE]
+
 export interface Launch {
   id: string
   name: string
@@ -8,7 +27,6 @@ export interface Launch {
   t0: number | null
   window_start: number | null
   window_end: number | null
-  status: 'go' | 'hold' | 'scrub' | 'success' | 'failure'
   ll2_status_id: number
   has_timeline: number
   success_at: number | null
@@ -47,19 +65,19 @@ export function getLaunch(db: D1Database, id: string) {
 
 export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'>) {
   return db.prepare(`
-    INSERT INTO launches (id, name, rocket, pad, provider, provider_id, t0, window_start, window_end, status, ll2_status_id, has_timeline, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO launches (id, name, rocket, pad, provider, provider_id, t0, window_start, window_end, ll2_status_id, has_timeline, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name, rocket = excluded.rocket, pad = excluded.pad,
       provider = COALESCE(excluded.provider, provider),
       provider_id = COALESCE(excluded.provider_id, provider_id),
       t0 = excluded.t0, window_start = excluded.window_start, window_end = excluded.window_end,
-      status = excluded.status, ll2_status_id = excluded.ll2_status_id,
+      ll2_status_id = excluded.ll2_status_id,
       has_timeline = excluded.has_timeline, last_updated = unixepoch()
   `).bind(
     launch.id, launch.name, launch.rocket, launch.pad, launch.provider, launch.provider_id,
     launch.t0, launch.window_start, launch.window_end,
-    launch.status, launch.ll2_status_id, launch.has_timeline
+    launch.ll2_status_id, launch.has_timeline
   ).run()
 }
 
@@ -69,7 +87,7 @@ export function getActiveSubscriptionsForUser(db: D1Database, userId: string) {
     FROM subscriptions s
     JOIN launches l ON l.id = s.launch_id
     WHERE s.user_id = ?
-      AND l.status NOT IN ('success', 'failure', 'scrub')
+      AND l.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
   `).bind(userId).all<{ launch_id: string; name: string; provider: string | null }>()
 }
 
@@ -160,7 +178,7 @@ export function getSubscriptionsNeedingStart(db: D1Database, cutoffT0: number) {
     WHERE ud.push_to_start_token IS NOT NULL
       AND s.attributes_json IS NOT NULL
       AND s.start_dispatched = 0
-      AND l.status = 'go'
+      AND l.ll2_status_id IN (${CONFIRMED_GO_IDS.join(',')})
       AND l.t0 IS NOT NULL
       AND l.t0 <= ?
   `).bind(cutoffT0).all<SubscriptionWithDevice & { launch_name: string; t0: number; window_start: number | null; window_end: number | null; ll2_status_id: number }>()
@@ -203,7 +221,8 @@ export function getDueTimelineEvents(db: D1Database, now: number) {
     SELECT te.*, l.name as launch_name, l.rocket, l.t0, l.window_start, l.window_end, l.ll2_status_id
     FROM timeline_events te
     JOIN launches l ON l.id = te.launch_id
-    WHERE te.fire_at <= ? AND te.sent_at IS NULL AND l.status = 'go'
+    WHERE te.fire_at <= ? AND te.sent_at IS NULL
+      AND l.ll2_status_id IN (${CONFIRMED_GO_IDS.join(',')})
     ORDER BY te.fire_at ASC
     LIMIT 100
   `).bind(now).all<TimelineEvent & { launch_name: string; rocket: string; t0: number; window_start: number | null; window_end: number | null; ll2_status_id: number }>()
@@ -218,7 +237,7 @@ export function getSubscribedLaunchIds(db: D1Database) {
   return db.prepare(`
     SELECT DISTINCT launch_id FROM subscriptions
     JOIN launches ON launches.id = subscriptions.launch_id
-    WHERE launches.status NOT IN ('success', 'failure', 'scrub')
+    WHERE launches.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
   `).all<{ launch_id: string }>()
 }
 
@@ -238,7 +257,7 @@ export function getSubscriptionsNeedingReminder(
     LEFT JOIN user_preferences up ON up.user_id = s.user_id
     WHERE s.${subCol} = 0
       AND (up.${prefCol} IS NULL OR up.${prefCol} = 1)
-      AND l.status = 'go'
+      AND l.ll2_status_id IN (${CONFIRMED_GO_IDS.join(',')})
       AND l.t0 IS NOT NULL
       AND l.t0 > ? AND l.t0 <= ?
   `).bind(fromT0, toT0).all<{
@@ -283,8 +302,9 @@ export function markReminderSent(db: D1Database, subscriptionId: string, windowL
 export function getActiveNoTimelineLaunches(db: D1Database) {
   return db.prepare(`
     SELECT * FROM launches
-    WHERE has_timeline = 0 AND status NOT IN ('success', 'failure', 'scrub')
-    AND t0 IS NOT NULL
+    WHERE has_timeline = 0
+      AND ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
+      AND t0 IS NOT NULL
   `).all<Launch>()
 }
 
