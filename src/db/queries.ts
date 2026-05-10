@@ -22,6 +22,8 @@ export interface Launch {
   name: string
   rocket: string
   pad: string
+  pad_location: string | null
+  pad_location_id: number | null
   provider: string | null
   provider_id: number | null
   t0: number | null
@@ -65,17 +67,21 @@ export function getLaunch(db: D1Database, id: string) {
 
 export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'>) {
   return db.prepare(`
-    INSERT INTO launches (id, name, rocket, pad, provider, provider_id, t0, window_start, window_end, ll2_status_id, has_timeline, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO launches (id, name, rocket, pad, pad_location, pad_location_id, provider, provider_id, t0, window_start, window_end, ll2_status_id, has_timeline, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name, rocket = excluded.rocket, pad = excluded.pad,
+      pad_location = COALESCE(excluded.pad_location, pad_location),
+      pad_location_id = COALESCE(excluded.pad_location_id, pad_location_id),
       provider = COALESCE(excluded.provider, provider),
       provider_id = COALESCE(excluded.provider_id, provider_id),
       t0 = excluded.t0, window_start = excluded.window_start, window_end = excluded.window_end,
       ll2_status_id = excluded.ll2_status_id,
       has_timeline = excluded.has_timeline, last_updated = unixepoch()
   `).bind(
-    launch.id, launch.name, launch.rocket, launch.pad, launch.provider, launch.provider_id,
+    launch.id, launch.name, launch.rocket, launch.pad,
+    launch.pad_location, launch.pad_location_id,
+    launch.provider, launch.provider_id,
     launch.t0, launch.window_start, launch.window_end,
     launch.ll2_status_id, launch.has_timeline
   ).run()
@@ -141,8 +147,15 @@ export function fanOutProviderSubscriptions(db: D1Database, launchId: string, pr
     SELECT ?, ps.user_id
     FROM provider_subscriptions ps
     JOIN user_devices ud ON ud.user_id = ps.user_id
-    WHERE ps.provider_id = ?
-  `).bind(launchId, providerId).run()
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = ps.user_id AND lo.launch_id = ?
+    WHERE ps.provider_id = ? AND lo.launch_id IS NULL
+    UNION
+    SELECT ?, ssp.user_id
+    FROM section_subscription_providers ssp
+    JOIN user_devices ud ON ud.user_id = ssp.user_id
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = ssp.user_id AND lo.launch_id = ?
+    WHERE ssp.provider_id = ? AND lo.launch_id IS NULL
+  `).bind(launchId, launchId, providerId, launchId, launchId, providerId).run()
 }
 
 export function getProviderSubscriptionsForUser(db: D1Database, userId: string) {
@@ -156,9 +169,85 @@ export function upsertProviderSubscription(db: D1Database, userId: string, provi
   `).bind(userId, providerId).run()
 }
 
+/// Inserts or replaces a full section subscription record.
+/// Pass allUpcoming=true and empty arrays for "all upcoming" sections.
+export function upsertSectionSubscription(
+  db: D1Database,
+  userId: string,
+  sectionId: string,
+  allUpcoming: boolean,
+  providerIds: number[],
+  locationIds: number[]
+) {
+  const stmts = [
+    db.prepare(`
+      INSERT INTO section_subscriptions (user_id, section_id, all_upcoming)
+      VALUES (?, ?, ?)
+      ON CONFLICT(user_id, section_id) DO UPDATE SET all_upcoming = excluded.all_upcoming
+    `).bind(userId, sectionId, allUpcoming ? 1 : 0),
+    // Clear old entries so re-subscribing with a different filter is always clean
+    db.prepare('DELETE FROM section_subscription_providers WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
+    db.prepare('DELETE FROM section_subscription_locations WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
+    ...providerIds.map(id =>
+      db.prepare('INSERT OR IGNORE INTO section_subscription_providers (user_id, section_id, provider_id) VALUES (?, ?, ?)')
+        .bind(userId, sectionId, id)
+    ),
+    ...locationIds.map(id =>
+      db.prepare('INSERT OR IGNORE INTO section_subscription_locations (user_id, section_id, location_id) VALUES (?, ?, ?)')
+        .bind(userId, sectionId, id)
+    ),
+  ]
+  return db.batch(stmts)
+}
+
+/// Removes all subscription data for a section.
+export function deleteSectionSubscription(db: D1Database, userId: string, sectionId: string) {
+  return db.batch([
+    db.prepare('DELETE FROM section_subscriptions WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
+    db.prepare('DELETE FROM section_subscription_providers WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
+    db.prepare('DELETE FROM section_subscription_locations WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
+  ])
+}
+
 export function deleteProviderSubscription(db: D1Database, userId: string, providerId: number) {
   return db.prepare('DELETE FROM provider_subscriptions WHERE user_id = ? AND provider_id = ?')
     .bind(userId, providerId).run()
+}
+
+export function getLocationSubscriptionsForUser(db: D1Database, userId: string) {
+  return db.prepare('SELECT location_id, location FROM location_subscriptions WHERE user_id = ?')
+    .bind(userId).all<{ location_id: number; location: string }>()
+}
+
+export function upsertLocationSubscription(db: D1Database, userId: string, locationId: number) {
+  return db.prepare(`
+    INSERT INTO location_subscriptions (user_id, location_id, location)
+    VALUES (?, ?, (SELECT pad_location FROM launches WHERE pad_location_id = ? LIMIT 1))
+    ON CONFLICT(user_id, location_id) DO UPDATE SET
+      location = COALESCE((SELECT pad_location FROM launches WHERE pad_location_id = ? LIMIT 1), location)
+  `).bind(userId, locationId, locationId, locationId).run()
+}
+
+export function deleteLocationSubscription(db: D1Database, userId: string, locationId: number) {
+  return db.prepare('DELETE FROM location_subscriptions WHERE user_id = ? AND location_id = ?')
+    .bind(userId, locationId).run()
+}
+
+export function fanOutLocationSubscriptions(db: D1Database, launchId: string, padLocationId: number) {
+  return db.prepare(`
+    INSERT OR IGNORE INTO subscriptions (launch_id, user_id)
+    SELECT ?, ls.user_id
+    FROM location_subscriptions ls
+    JOIN user_devices ud ON ud.user_id = ls.user_id
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = ls.user_id AND lo.launch_id = ?
+    WHERE ls.location_id = ? AND lo.launch_id IS NULL
+    UNION
+    SELECT ?, ssl.user_id
+    FROM section_subscription_locations ssl
+    JOIN user_devices ud ON ud.user_id = ssl.user_id
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = ssl.user_id AND lo.launch_id = ?
+    WHERE ssl.location_id = ? AND lo.launch_id IS NULL
+  `).bind(launchId, launchId, padLocationId, launchId, launchId, padLocationId).run()
 }
 
 export function resetReminderFlags(db: D1Database, launchId: string) {
@@ -292,6 +381,29 @@ export function upsertUserPreferences(db: D1Database, userId: string, remind24h:
       remind_10m = excluded.remind_10m,
       updated_at = unixepoch()
   `).bind(userId, remind24h ? 1 : 0, remind1h ? 1 : 0, remind10m ? 1 : 0).run()
+}
+
+
+export function fanOutAllUpcomingSubscriptions(db: D1Database, launchId: string) {
+  return db.prepare(`
+    INSERT OR IGNORE INTO subscriptions (launch_id, user_id)
+    SELECT ?, ss.user_id
+    FROM section_subscriptions ss
+    JOIN user_devices ud ON ud.user_id = ss.user_id
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = ss.user_id AND lo.launch_id = ?
+    WHERE ss.all_upcoming = 1 AND lo.launch_id IS NULL
+  `).bind(launchId, launchId).run()
+}
+
+
+export function insertLaunchOptOut(db: D1Database, userId: string, launchId: string) {
+  return db.prepare('INSERT OR IGNORE INTO launch_opt_outs (user_id, launch_id) VALUES (?, ?)')
+    .bind(userId, launchId).run()
+}
+
+export function deleteLaunchOptOut(db: D1Database, userId: string, launchId: string) {
+  return db.prepare('DELETE FROM launch_opt_outs WHERE user_id = ? AND launch_id = ?')
+    .bind(userId, launchId).run()
 }
 
 export function markReminderSent(db: D1Database, subscriptionId: string, windowLabel: '24h' | '1h' | '10m') {

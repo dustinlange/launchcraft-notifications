@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, fanOutProviderSubscriptions, resetReminderFlags, TERMINAL_IDS, LL2_STATUS } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, fanOutProviderSubscriptions, fanOutLocationSubscriptions, fanOutAllUpcomingSubscriptions, resetReminderFlags, TERMINAL_IDS, LL2_STATUS } from '../db/queries'
 import { createLL2Client, mapT0, parseRelativeTime } from '../ll2'
 import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -32,7 +32,7 @@ async function syncLaunch(env: Env, ll2: {
   net: string | null; window_start: string | null; window_end: string | null
   status: { id: number; abbrev: string }
   rocket: { configuration: { name: string } }
-  pad: { name: string; location: { name: string } }
+  pad: { name: string; location: { id: number; name: string } }
   launch_service_provider: { id: number; name: string } | null
   timeline: Array<{ type: { abbrev: string }; relative_time: string }> | null
 }) {
@@ -53,6 +53,8 @@ async function syncLaunch(env: Env, ll2: {
     name: ll2.name,
     rocket: ll2.rocket.configuration.name,
     pad: `${ll2.pad.name}, ${ll2.pad.location.name}`,
+    pad_location: ll2.pad.location.name,
+    pad_location_id: ll2.pad.location.id,
     provider: ll2.launch_service_provider?.name ?? null,
     provider_id: ll2.launch_service_provider?.id ?? null,
     t0,
@@ -71,6 +73,9 @@ async function syncLaunch(env: Env, ll2: {
   if (ll2.launch_service_provider?.id) {
     await fanOutProviderSubscriptions(env.DB, ll2.id, ll2.launch_service_provider.id)
   }
+
+  await fanOutLocationSubscriptions(env.DB, ll2.id, ll2.pad.location.id)
+  await fanOutAllUpcomingSubscriptions(env.DB, ll2.id)
 
   if (TERMINAL_IDS.includes(ll2StatusId as any)) {
     await markSuccessAt(env.DB, ll2.id, Math.floor(Date.now() / 1000))
@@ -113,8 +118,10 @@ async function syncLaunch(env: Env, ll2: {
 
     if (statusChanged) {
       await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
-        title: isTerminal ? 'Status Updated' : `${ll2.name}: ${statusLabel(ll2StatusId)}`,
-        body: statusBody(ll2StatusId, ll2.name, ll2.rocket.configuration.name),
+        title: 'Status Changed',
+        body: isTerminal
+          ? statusBody(ll2StatusId, ll2.name, ll2.rocket.configuration.name)
+          : `${ll2.name} status has changed from ${statusLabel(prev.ll2_status_id)} to ${statusLabel(ll2StatusId)}`,
         launchId: ll2.id,
         type: 'status_change',
       })

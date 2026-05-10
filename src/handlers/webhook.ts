@@ -25,6 +25,8 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
 
   await upsertLaunch(c.env.DB, {
     id: body.id, name: body.name, rocket: body.rocket, pad: body.pad,
+    pad_location: null,
+    pad_location_id: null,
     provider: null,
     provider_id: null,
     t0: body.t0 ?? null,
@@ -75,8 +77,10 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
 
     if (statusChanged) {
       await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
-        title: isTerminal ? 'Status Updated' : `${body.name}: ${statusLabel(body.ll2StatusId)}`,
-        body: statusBody(body.ll2StatusId, body.name, body.rocket),
+        title: 'Status Changed',
+        body: isTerminal
+          ? statusBody(body.ll2StatusId, body.name, body.rocket)
+          : `${body.name} status has changed from ${statusLabel(prev.ll2_status_id)} to ${statusLabel(body.ll2StatusId)}`,
         launchId: body.id,
         type: 'status_change',
       })

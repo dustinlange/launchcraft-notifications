@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertSectionSubscription, deleteSectionSubscription, insertLaunchOptOut, deleteLaunchOptOut } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -38,6 +38,8 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     name: launch.name,
     rocket: launch.rocket,
     pad: launch.pad,
+    pad_location: null,
+    pad_location_id: null,
     provider: null,
     provider_id: null,
     t0: launch.t0 ?? null,
@@ -60,6 +62,9 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     user_id: userId,
     attributes_json: attributesJson ?? null,
   })
+
+  // Clear any explicit opt-out so fan-out can include this launch again in future syncs
+  await deleteLaunchOptOut(c.env.DB, userId, launch.id)
 
   // Immediately sync from LL2 so the DB has fresh data without waiting for the next poll
   c.executionCtx.waitUntil(syncLaunchById(c.env, launch.id))
@@ -132,6 +137,27 @@ export async function handleUnsubscribe(c: Context<{ Bindings: Env }>) {
   if (!userId || !launchId) return c.json({ error: 'missing required fields' }, 400)
 
   await deleteSubscription(c.env.DB, userId, launchId)
+  // Record the opt-out so fan-out from provider/location/all-upcoming doesn't re-add this subscription
+  await insertLaunchOptOut(c.env.DB, userId, launchId)
+  return c.json({ ok: true })
+}
+
+// POST /device-token
+// Called when the APNs device token becomes available or rotates.
+// Updates the token in place without touching any subscription state.
+export async function handleDeviceToken(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; deviceToken: string }>()
+  const { userId, deviceToken } = body
+  if (!userId || !deviceToken) return c.json({ error: 'missing required fields' }, 400)
+
+  await c.env.DB.prepare(`
+    INSERT INTO user_devices (user_id, device_token, updated_at)
+    VALUES (?, ?, unixepoch())
+    ON CONFLICT(user_id) DO UPDATE SET
+      device_token = excluded.device_token,
+      updated_at = unixepoch()
+  `).bind(userId, deviceToken).run()
+
   return c.json({ ok: true })
 }
 
@@ -176,6 +202,81 @@ export async function handleUnsubscribeFromProvider(c: Context<{ Bindings: Env }
   if (!userId || !providerId) return c.json({ error: 'missing required fields' }, 400)
 
   await deleteProviderSubscription(c.env.DB, userId, providerId)
+  return c.json({ ok: true })
+}
+
+// GET /location-subscriptions?userId=<id>
+export async function handleGetLocationSubscriptions(c: Context<{ Bindings: Env }>) {
+  const userId = c.req.query('userId')
+  if (!userId) return c.json({ error: 'missing userId' }, 400)
+
+  const { results } = await getLocationSubscriptionsForUser(c.env.DB, userId)
+  return c.json({ locations: results.map(r => ({ locationId: r.location_id, location: r.location })) })
+}
+
+// POST /location-subscription
+export async function handleSubscribeToLocation(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; locationId: number }>()
+  const { userId, locationId } = body
+  if (!userId || !locationId) return c.json({ error: 'missing required fields' }, 400)
+
+  await upsertLocationSubscription(c.env.DB, userId, locationId)
+  return c.json({ ok: true })
+}
+
+// DELETE /location-subscription
+export async function handleUnsubscribeFromLocation(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; locationId: number }>()
+  const { userId, locationId } = body
+  if (!userId || !locationId) return c.json({ error: 'missing required fields' }, 400)
+
+  await deleteLocationSubscription(c.env.DB, userId, locationId)
+  return c.json({ ok: true })
+}
+
+// GET /section-subscription?userId=<id>&sectionId=<id>
+// Returns whether the given section has an active subscription.
+export async function handleGetSectionSubscription(c: Context<{ Bindings: Env }>) {
+  const userId = c.req.query('userId')
+  const sectionId = c.req.query('sectionId')
+  if (!userId || !sectionId) return c.json({ error: 'missing userId or sectionId' }, 400)
+
+  const row = await c.env.DB.prepare(
+    'SELECT 1 FROM section_subscriptions WHERE user_id = ? AND section_id = ?'
+  ).bind(userId, sectionId).first()
+
+  return c.json({ subscribed: row !== null })
+}
+
+// POST /section-subscription
+// Creates or replaces a section subscription. sectionId is the stable UUID of the ForYouSection.
+// Pass allUpcoming=true (or empty provider/location arrays) for "all upcoming" sections.
+export async function handleSubscribeToSection(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{
+    userId: string
+    sectionId: string
+    providerIds: number[]
+    locationIds: number[]
+  }>()
+  const { userId, sectionId, providerIds, locationIds } = body
+  if (!userId || !sectionId) return c.json({ error: 'missing userId or sectionId' }, 400)
+  if (!Array.isArray(providerIds) || !Array.isArray(locationIds)) {
+    return c.json({ error: 'providerIds and locationIds must be arrays' }, 400)
+  }
+
+  const allUpcoming = providerIds.length === 0 && locationIds.length === 0
+  await upsertSectionSubscription(c.env.DB, userId, sectionId, allUpcoming, providerIds, locationIds)
+  return c.json({ ok: true })
+}
+
+// DELETE /section-subscription
+// Removes a section subscription entirely. Only needs the sectionId.
+export async function handleUnsubscribeFromSection(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; sectionId: string }>()
+  const { userId, sectionId } = body
+  if (!userId || !sectionId) return c.json({ error: 'missing userId or sectionId' }, 400)
+
+  await deleteSectionSubscription(c.env.DB, userId, sectionId)
   return c.json({ ok: true })
 }
 

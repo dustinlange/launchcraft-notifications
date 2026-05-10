@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS launches (
   name          TEXT NOT NULL,
   rocket        TEXT NOT NULL,
   pad           TEXT NOT NULL,
+  pad_location     TEXT,             -- LL2 pad.location.name e.g. "Cape Canaveral, FL, USA"
+  pad_location_id  INTEGER,          -- LL2 pad.location.id; stable key for location subscriptions
   t0            INTEGER,            -- unix timestamp; NULL if NET not confirmed
   window_start  INTEGER,            -- launch window open (unix timestamp)
   window_end    INTEGER,            -- launch window close (unix timestamp)
@@ -29,6 +31,14 @@ CREATE TABLE IF NOT EXISTS provider_subscriptions (
   user_id     TEXT    NOT NULL,
   provider_id INTEGER NOT NULL,
   PRIMARY KEY (user_id, provider_id)
+);
+
+-- Location-level subscriptions (auto-fan-out to per-launch on new launches)
+CREATE TABLE IF NOT EXISTS location_subscriptions (
+  user_id      TEXT    NOT NULL,
+  location_id  INTEGER NOT NULL,    -- LL2 pad.location.id; stable key
+  location     TEXT,                -- display name; derived from launches table, may be NULL until a launch syncs
+  PRIMARY KEY (user_id, location_id)
 );
 
 -- Per-user subscriptions to a launch
@@ -61,11 +71,43 @@ CREATE TABLE IF NOT EXISTS timeline_events (
 
 -- Per-user notification preferences (all reminders enabled by default)
 CREATE TABLE IF NOT EXISTS user_preferences (
-  user_id      TEXT PRIMARY KEY,
-  remind_24h   INTEGER NOT NULL DEFAULT 1,
-  remind_1h    INTEGER NOT NULL DEFAULT 1,
-  remind_10m   INTEGER NOT NULL DEFAULT 1,
-  updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
+  user_id    TEXT PRIMARY KEY,
+  remind_24h INTEGER NOT NULL DEFAULT 1,
+  remind_1h  INTEGER NOT NULL DEFAULT 1,
+  remind_10m INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Section-level subscriptions (one row per subscribed For You section)
+CREATE TABLE IF NOT EXISTS section_subscriptions (
+  user_id      TEXT    NOT NULL,
+  section_id   TEXT    NOT NULL,   -- ForYouSection.id (UUID string)
+  all_upcoming INTEGER NOT NULL DEFAULT 0,  -- 1 = subscribe to every upcoming launch
+  PRIMARY KEY (user_id, section_id)
+);
+
+-- Provider entries for a section subscription
+CREATE TABLE IF NOT EXISTS section_subscription_providers (
+  user_id     TEXT    NOT NULL,
+  section_id  TEXT    NOT NULL,
+  provider_id INTEGER NOT NULL,
+  PRIMARY KEY (user_id, section_id, provider_id)
+);
+
+-- Location entries for a section subscription
+CREATE TABLE IF NOT EXISTS section_subscription_locations (
+  user_id     TEXT    NOT NULL,
+  section_id  TEXT    NOT NULL,
+  location_id INTEGER NOT NULL,
+  PRIMARY KEY (user_id, section_id, location_id)
+);
+
+-- Explicit per-launch opt-outs for users with subscribe_all_upcoming or fan-out subscriptions.
+-- Prevents a manual unsubscribe from being overridden on the next launch sync.
+CREATE TABLE IF NOT EXISTS launch_opt_outs (
+  user_id   TEXT NOT NULL,
+  launch_id TEXT NOT NULL,
+  PRIMARY KEY (user_id, launch_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);

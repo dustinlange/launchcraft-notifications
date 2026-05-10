@@ -12,7 +12,7 @@ export interface LL2Launch {
   window_end: string | null
   status: { id: number; abbrev: string }
   rocket: { configuration: { name: string } }
-  pad: { name: string; location: { name: string } }
+  pad: { name: string; location: { id: number; name: string } }
   launch_service_provider: { id: number; name: string } | null
   mission: { name: string; description: string } | null
   timeline: LL2TimelineEvent[] | null
