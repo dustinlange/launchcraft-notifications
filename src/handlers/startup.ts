@@ -27,9 +27,12 @@ export async function handleStartup(c: Context<{ Bindings: Env }>) {
       provider: r.provider ?? null,
     })),
     notificationPreferences: {
-      remind24h: prefs ? prefs.remind_24h === 1 : true,
-      remind1h:  prefs ? prefs.remind_1h  === 1 : true,
-      remind10m: prefs ? prefs.remind_10m === 1 : true,
+      remind24h:            prefs ? prefs.remind_24h             === 1 : true,
+      remind1h:             prefs ? prefs.remind_1h              === 1 : true,
+      remind10m:            prefs ? prefs.remind_10m             === 1 : true,
+      notifyNetChange:      prefs ? prefs.notify_net_change      === 1 : false,
+      notifyStatusChange:   prefs ? prefs.notify_status_change   === 1 : false,
+      notifyTerminalStatus: prefs ? prefs.notify_terminal_status !== 0 : true,
     },
     providerIds: providerResult.results.map(r => r.provider_id),
     locations: locationResult.results.map(r => ({

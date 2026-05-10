@@ -116,7 +116,11 @@ async function syncLaunch(env: Env, ll2: {
       })
     }
 
-    if (statusChanged) {
+    const wantsTerminal    = sub.notify_terminal_status !== 0  // NULL → default on
+    const wantsStatusChange = sub.notify_status_change === 1   // NULL → default off
+    const wantsNetChange    = sub.notify_net_change    === 1   // NULL → default off
+
+    if (statusChanged && (isTerminal ? wantsTerminal : wantsStatusChange)) {
       await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
         title: 'Status Changed',
         body: isTerminal
@@ -125,7 +129,7 @@ async function syncLaunch(env: Env, ll2: {
         launchId: ll2.id,
         type: 'status_change',
       })
-    } else if (t0Changed && t0) {
+    } else if (t0Changed && t0 && wantsNetChange) {
       await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
         title: 'Schedule Changed',
         body: new Date(t0 * 1000).toUTCString(),

@@ -50,6 +50,10 @@ export interface Subscription {
 export interface SubscriptionWithDevice extends Subscription {
   device_token: string
   push_to_start_token: string | null
+  // Per-user notification prefs (NULL = use default)
+  notify_net_change: number | null
+  notify_status_change: number | null
+  notify_terminal_status: number | null
 }
 
 export interface TimelineEvent {
@@ -99,9 +103,11 @@ export function getActiveSubscriptionsForUser(db: D1Database, userId: string) {
 
 export function getSubscriptionsForLaunch(db: D1Database, launchId: string) {
   return db.prepare(`
-    SELECT s.*, ud.device_token, ud.push_to_start_token
+    SELECT s.*, ud.device_token, ud.push_to_start_token,
+           up.notify_net_change, up.notify_status_change, up.notify_terminal_status
     FROM subscriptions s
     JOIN user_devices ud ON ud.user_id = s.user_id
+    LEFT JOIN user_preferences up ON up.user_id = s.user_id
     WHERE s.launch_id = ?
   `).bind(launchId).all<SubscriptionWithDevice>()
 }
@@ -365,22 +371,43 @@ export interface UserPreferences {
   remind_24h: number
   remind_1h: number
   remind_10m: number
+  notify_net_change: number
+  notify_status_change: number
+  notify_terminal_status: number
 }
 
 export function getUserPreferences(db: D1Database, userId: string) {
   return db.prepare('SELECT * FROM user_preferences WHERE user_id = ?').bind(userId).first<UserPreferences>()
 }
 
-export function upsertUserPreferences(db: D1Database, userId: string, remind24h: boolean, remind1h: boolean, remind10m: boolean) {
+export function upsertUserPreferences(
+  db: D1Database,
+  userId: string,
+  remind24h: boolean,
+  remind1h: boolean,
+  remind10m: boolean,
+  notifyNetChange: boolean,
+  notifyStatusChange: boolean,
+  notifyTerminalStatus: boolean
+) {
   return db.prepare(`
-    INSERT INTO user_preferences (user_id, remind_24h, remind_1h, remind_10m, updated_at)
-    VALUES (?, ?, ?, ?, unixepoch())
+    INSERT INTO user_preferences
+      (user_id, remind_24h, remind_1h, remind_10m,
+       notify_net_change, notify_status_change, notify_terminal_status, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(user_id) DO UPDATE SET
       remind_24h = excluded.remind_24h,
       remind_1h = excluded.remind_1h,
       remind_10m = excluded.remind_10m,
+      notify_net_change = excluded.notify_net_change,
+      notify_status_change = excluded.notify_status_change,
+      notify_terminal_status = excluded.notify_terminal_status,
       updated_at = unixepoch()
-  `).bind(userId, remind24h ? 1 : 0, remind1h ? 1 : 0, remind10m ? 1 : 0).run()
+  `).bind(
+    userId,
+    remind24h ? 1 : 0, remind1h ? 1 : 0, remind10m ? 1 : 0,
+    notifyNetChange ? 1 : 0, notifyStatusChange ? 1 : 0, notifyTerminalStatus ? 1 : 0
+  ).run()
 }
 
 

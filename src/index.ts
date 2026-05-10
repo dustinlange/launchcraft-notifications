@@ -8,6 +8,7 @@ import { dispatchActivityStarts, dispatchActivityEnds } from './handlers/activit
 import { dispatchReminders } from './handlers/reminders'
 import { handleGetPreferences, handleSavePreferences } from './handlers/preferences'
 import { handleStartup } from './handlers/startup'
+import { handleTestTrigger } from './handlers/test'
 
 export interface Env {
   DB: D1Database
@@ -65,6 +66,7 @@ app.post('/section-subscription', handleSubscribeToSection)
 app.delete('/section-subscription', handleUnsubscribeFromSection)
 
 app.get('/startup', handleStartup)
+app.post('/test/trigger', handleTestTrigger)
 app.get('/health', (c) => c.json({ ok: true }))
 
 export default {

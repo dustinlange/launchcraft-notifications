@@ -71,11 +71,14 @@ CREATE TABLE IF NOT EXISTS timeline_events (
 
 -- Per-user notification preferences (all reminders enabled by default)
 CREATE TABLE IF NOT EXISTS user_preferences (
-  user_id    TEXT PRIMARY KEY,
-  remind_24h INTEGER NOT NULL DEFAULT 1,
-  remind_1h  INTEGER NOT NULL DEFAULT 1,
-  remind_10m INTEGER NOT NULL DEFAULT 1,
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  user_id                  TEXT    PRIMARY KEY,
+  remind_24h               INTEGER NOT NULL DEFAULT 1,
+  remind_1h                INTEGER NOT NULL DEFAULT 1,
+  remind_10m               INTEGER NOT NULL DEFAULT 1,
+  notify_net_change        INTEGER NOT NULL DEFAULT 0,  -- NET / T-0 changed (default off)
+  notify_status_change     INTEGER NOT NULL DEFAULT 0,  -- non-terminal status changed (default off)
+  notify_terminal_status   INTEGER NOT NULL DEFAULT 1,  -- success / failure / partial failure (default on)
+  updated_at               INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 -- Section-level subscriptions (one row per subscribed For You section)

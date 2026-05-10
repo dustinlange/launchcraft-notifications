@@ -75,7 +75,11 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
       })
     }
 
-    if (statusChanged) {
+    const wantsTerminal    = sub.notify_terminal_status !== 0  // NULL → default on
+    const wantsStatusChange = sub.notify_status_change === 1   // NULL → default off
+    const wantsNetChange    = sub.notify_net_change    === 1   // NULL → default off
+
+    if (statusChanged && (isTerminal ? wantsTerminal : wantsStatusChange)) {
       await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
         title: 'Status Changed',
         body: isTerminal
@@ -84,7 +88,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
         launchId: body.id,
         type: 'status_change',
       })
-    } else if (t0Changed && body.t0) {
+    } else if (t0Changed && body.t0 && wantsNetChange) {
       await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
         title: 'Schedule Changed',
         body: new Date(body.t0 * 1000).toUTCString(),
