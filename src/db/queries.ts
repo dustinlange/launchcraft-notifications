@@ -389,7 +389,7 @@ export function resetReminderFlags(db: D1Database, launchId: string) {
   `).bind(launchId).run()
 }
 
-export function getSubscriptionsNeedingStart(db: D1Database, cutoffT0: number) {
+export function getSubscriptionsNeedingStart(db: D1Database, now: number) {
   return db.prepare(`
     SELECT s.*, ud.device_token, ud.push_to_start_token,
            l.name as launch_name, l.t0, l.window_start, l.window_end, l.ll2_status_id,
@@ -398,6 +398,7 @@ export function getSubscriptionsNeedingStart(db: D1Database, cutoffT0: number) {
     FROM subscriptions s
     JOIN user_devices ud ON ud.user_id = s.user_id
     JOIN launches l ON l.id = s.launch_id
+    LEFT JOIN user_preferences up ON up.user_id = s.user_id
     LEFT JOIN timeline_events first_te ON first_te.id = (
       SELECT id FROM timeline_events
       WHERE launch_id = s.launch_id AND fire_at > unixepoch()
@@ -409,8 +410,9 @@ export function getSubscriptionsNeedingStart(db: D1Database, cutoffT0: number) {
       AND s.activity_token IS NULL  -- skip if user already has a running Live Activity
       AND l.ll2_status_id IN (${CONFIRMED_GO_IDS.join(',')})
       AND l.t0 IS NOT NULL
-      AND l.t0 <= ?
-  `).bind(cutoffT0).all<SubscriptionWithDevice & { launch_name: string; t0: number; window_start: number | null; window_end: number | null; ll2_status_id: number; first_event_name: string | null; first_event_fire_at: number | null }>()
+      AND COALESCE(up.auto_live_activity, 1) = 1
+      AND l.t0 <= ? + COALESCE(up.live_activity_window, 3600)
+  `).bind(now).all<SubscriptionWithDevice & { launch_name: string; t0: number; window_start: number | null; window_end: number | null; ll2_status_id: number; first_event_name: string | null; first_event_fire_at: number | null }>()
 }
 
 export function markStartDispatched(db: D1Database, subscriptionId: string) {
@@ -546,6 +548,8 @@ export interface UserPreferences {
   notify_net_change: number
   notify_status_change: number
   notify_terminal_status: number
+  auto_live_activity: number
+  live_activity_window: number
 }
 
 export function getUserPreferences(db: D1Database, userId: string) {
@@ -560,13 +564,16 @@ export function upsertUserPreferences(
   remind10m: boolean,
   notifyNetChange: boolean,
   notifyStatusChange: boolean,
-  notifyTerminalStatus: boolean
+  notifyTerminalStatus: boolean,
+  autoLiveActivity: boolean,
+  liveActivityWindow: number,
 ) {
   return db.prepare(`
     INSERT INTO user_preferences
       (user_id, remind_24h, remind_1h, remind_10m,
-       notify_net_change, notify_status_change, notify_terminal_status, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+       notify_net_change, notify_status_change, notify_terminal_status,
+       auto_live_activity, live_activity_window, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(user_id) DO UPDATE SET
       remind_24h = excluded.remind_24h,
       remind_1h = excluded.remind_1h,
@@ -574,11 +581,14 @@ export function upsertUserPreferences(
       notify_net_change = excluded.notify_net_change,
       notify_status_change = excluded.notify_status_change,
       notify_terminal_status = excluded.notify_terminal_status,
+      auto_live_activity = excluded.auto_live_activity,
+      live_activity_window = excluded.live_activity_window,
       updated_at = unixepoch()
   `).bind(
     userId,
     remind24h ? 1 : 0, remind1h ? 1 : 0, remind10m ? 1 : 0,
-    notifyNetChange ? 1 : 0, notifyStatusChange ? 1 : 0, notifyTerminalStatus ? 1 : 0
+    notifyNetChange ? 1 : 0, notifyStatusChange ? 1 : 0, notifyTerminalStatus ? 1 : 0,
+    autoLiveActivity ? 1 : 0, liveActivityWindow,
   ).run()
 }
 

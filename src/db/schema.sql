@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   notify_net_change        INTEGER NOT NULL DEFAULT 0,  -- NET / T-0 changed (default off)
   notify_status_change     INTEGER NOT NULL DEFAULT 0,  -- non-terminal status changed (default off)
   notify_terminal_status   INTEGER NOT NULL DEFAULT 1,  -- success / failure / partial failure (default on)
+  auto_live_activity       INTEGER NOT NULL DEFAULT 1,  -- automatically start Live Activity (default on)
+  live_activity_window     INTEGER NOT NULL DEFAULT 3600, -- seconds before T-0 to start (14400=4h, 3600=1h, 1800=30m)
   updated_at               INTEGER NOT NULL DEFAULT (unixepoch())
 );
 

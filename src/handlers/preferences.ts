@@ -15,6 +15,8 @@ export async function handleGetPreferences(c: Context<{ Bindings: Env }>) {
     notifyNetChange:       prefs ? prefs.notify_net_change      === 1 : false,
     notifyStatusChange:    prefs ? prefs.notify_status_change   === 1 : false,
     notifyTerminalStatus:  prefs ? prefs.notify_terminal_status !== 0 : true,
+    autoLiveActivity:      prefs ? prefs.auto_live_activity     !== 0 : true,
+    liveActivityWindow:    prefs ? prefs.live_activity_window           : 3600,
   })
 }
 
@@ -28,16 +30,20 @@ export async function handleSavePreferences(c: Context<{ Bindings: Env }>) {
     notifyNetChange: boolean
     notifyStatusChange: boolean
     notifyTerminalStatus: boolean
+    autoLiveActivity: boolean
+    liveActivityWindow: number
   }>()
 
   const { userId, remind24h, remind1h, remind10m,
-          notifyNetChange, notifyStatusChange, notifyTerminalStatus } = body
+          notifyNetChange, notifyStatusChange, notifyTerminalStatus,
+          autoLiveActivity, liveActivityWindow } = body
   if (!userId) return c.json({ error: 'missing userId' }, 400)
 
   await upsertUserPreferences(
     c.env.DB, userId,
     remind24h ?? true, remind1h ?? true, remind10m ?? true,
-    notifyNetChange ?? false, notifyStatusChange ?? false, notifyTerminalStatus ?? true
+    notifyNetChange ?? false, notifyStatusChange ?? false, notifyTerminalStatus ?? true,
+    autoLiveActivity ?? true, liveActivityWindow ?? 3600,
   )
   return c.json({ ok: true })
 }

@@ -44,8 +44,8 @@ async function syncLaunch(env: Env, ll2: {
   mission: { name: string } | null
   net: string | null; window_start: string | null; window_end: string | null
   status: { id: number; abbrev: string }
-  image: string | null
-  rocket: { configuration: { name: string; image_url: string | null } }
+  image: { image_url: string } | null
+  rocket: { configuration: { name: string; image: { image_url: string } | null } }
   pad: { name: string; location: { id: number; name: string } }
   launch_service_provider: { id: number; name: string; logo_url: string | null } | null
   timeline: Array<{ type: { abbrev: string }; relative_time: string }> | null
@@ -73,8 +73,8 @@ async function syncLaunch(env: Env, ll2: {
     provider: ll2.launch_service_provider?.name ?? null,
     provider_id: ll2.launch_service_provider?.id ?? null,
     provider_logo_url: ll2.launch_service_provider?.logo_url ?? null,
-    image_url: ll2.image ?? null,
-    rocket_image_url: ll2.rocket.configuration.image_url ?? null,
+    image_url: ll2.image?.image_url ?? null,
+    rocket_image_url: ll2.rocket.configuration.image?.image_url ?? null,
     t0,
     window_start: windowStart,
     window_end: windowEnd,
