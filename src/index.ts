@@ -1,14 +1,15 @@
 import { Hono } from 'hono'
-import { handleRegister, handleActivityToken, handleDeviceToken, handlePushToStartToken, handleGetSubscriptions, handleUnsubscribe, handleGetProviderSubscriptions, handleSubscribeToProvider, handleUnsubscribeFromProvider, handleGetLocationSubscriptions, handleSubscribeToLocation, handleUnsubscribeFromLocation, handleGetSectionSubscription, handleSubscribeToSection, handleUnsubscribeFromSection } from './handlers/register'
+import { handleRegister, handleActivityToken, handleClearActivityToken, handleDeviceToken, handlePushToStartToken, handleGetSubscriptions, handleUnsubscribe, handleGetProviderSubscriptions, handleSubscribeToProvider, handleUnsubscribeFromProvider, handleGetLocationSubscriptions, handleSubscribeToLocation, handleUnsubscribeFromLocation, handleGetSectionSubscription, handleSubscribeToSection, handleUnsubscribeFromSection } from './handlers/register'
 import { handleWebhook } from './handlers/webhook'
 import { dispatchTimelineEvents } from './handlers/timeline'
 import { pollNoTimelineLaunches } from './handlers/poller'
-import { pollLL2 } from './handlers/ll2-poller'
+import { pollLL2, prefetchNearT0Launches } from './handlers/ll2-poller'
 import { dispatchActivityStarts, dispatchActivityEnds } from './handlers/activity-lifecycle'
 import { dispatchReminders } from './handlers/reminders'
 import { handleGetPreferences, handleSavePreferences } from './handlers/preferences'
 import { handleStartup } from './handlers/startup'
 import { handleTestTrigger } from './handlers/test'
+import { dispatchNewsNotifications, handleGetNewsSources, handleGetNewsPreferences, handleSaveNewsPreferences } from './handlers/news'
 
 export interface Env {
   DB: D1Database
@@ -46,6 +47,7 @@ app.get('/subscriptions', handleGetSubscriptions)
 app.post('/register', handleRegister)
 app.delete('/subscription', handleUnsubscribe)
 app.post('/activity-token', handleActivityToken)
+app.delete('/activity-token', handleClearActivityToken)
 app.post('/device-token', handleDeviceToken)
 app.post('/push-to-start-token', handlePushToStartToken)
 app.post('/webhook', handleWebhook)
@@ -65,6 +67,10 @@ app.get('/section-subscription', handleGetSectionSubscription)
 app.post('/section-subscription', handleSubscribeToSection)
 app.delete('/section-subscription', handleUnsubscribeFromSection)
 
+app.get('/news-sources', handleGetNewsSources)
+app.get('/news-preferences', handleGetNewsPreferences)
+app.post('/news-preferences', handleSaveNewsPreferences)
+
 app.get('/startup', handleStartup)
 app.post('/test/trigger', handleTestTrigger)
 app.get('/health', (c) => c.json({ ok: true }))
@@ -80,11 +86,13 @@ export default {
     ctx.waitUntil(dispatchActivityStarts(env))
     ctx.waitUntil(dispatchActivityEnds(env))
     ctx.waitUntil(dispatchReminders(env))
+    ctx.waitUntil(prefetchNearT0Launches(env))
 
     // Every 5 minutes
     if (now % 300 < 60) {
       ctx.waitUntil(pollLL2(env))
       ctx.waitUntil(pollNoTimelineLaunches(env))
+      ctx.waitUntil(dispatchNewsNotifications(env))
     }
   },
 }

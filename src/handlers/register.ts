@@ -80,6 +80,8 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
           windowEnd: null,
           currentEventName: null,
           currentEventDate: null,
+          nextEventName: null,
+          nextEventDate: null,
           statusId: launch.ll2StatusId,
         }, launch.name)
       )
@@ -108,6 +110,22 @@ export async function handleActivityToken(c: Context<{ Bindings: Env }>) {
   if (!launch) return c.json({ error: 'launch not found' }, 404)
 
   await updateActivityToken(c.env.DB, userId, launchId, activityToken, activityId)
+
+  return c.json({ ok: true })
+}
+
+// DELETE /activity-token
+// Called when the user's Live Activity is dismissed/ended.
+// Clears the activity token so push-to-start can fire again (if it hasn't already).
+export async function handleClearActivityToken(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; launchId: string }>()
+  const { userId, launchId } = body
+  if (!userId || !launchId) return c.json({ error: 'missing required fields' }, 400)
+
+  await c.env.DB.prepare(`
+    UPDATE subscriptions SET activity_token = NULL, activity_id = NULL
+    WHERE user_id = ? AND launch_id = ?
+  `).bind(userId, launchId).run()
 
   return c.json({ ok: true })
 }
@@ -292,6 +310,8 @@ export async function sendPushToStart(
     windowEnd: number | null
     currentEventName: string | null
     currentEventDate: number | null
+    nextEventName: string | null
+    nextEventDate: number | null
     statusId: number
   },
   launchName: string

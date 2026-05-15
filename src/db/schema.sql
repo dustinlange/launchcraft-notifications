@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS launches (
   id            TEXT PRIMARY KEY,   -- launch provider ID (e.g. "ll2:12345")
   name          TEXT NOT NULL,
+  mission_name  TEXT,                -- LL2 mission.name; may differ from launch name (e.g. "NROL-172" vs "Falcon 9 | NROL-172")
   rocket        TEXT NOT NULL,
   pad           TEXT NOT NULL,
   pad_location     TEXT,             -- LL2 pad.location.name e.g. "Cape Canaveral, FL, USA"
@@ -11,6 +12,9 @@ CREATE TABLE IF NOT EXISTS launches (
   window_end    INTEGER,            -- launch window close (unix timestamp)
   provider      TEXT,                         -- launch service provider name e.g. "SpaceX"
   provider_id   INTEGER,                      -- LL2 agency ID; stable foreign key for subscriptions
+  provider_logo_url  TEXT,                    -- LL2 agency logo image URL
+  image_url          TEXT,                    -- LL2 launch image URL
+  rocket_image_url   TEXT,                    -- LL2 rocket configuration image URL (fallback)
   ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
   has_timeline     INTEGER NOT NULL DEFAULT 0,
   success_at       INTEGER,                     -- unix timestamp when status first became 'success'
@@ -64,8 +68,9 @@ CREATE TABLE IF NOT EXISTS timeline_events (
   launch_id   TEXT NOT NULL REFERENCES launches(id) ON DELETE CASCADE,
   label       TEXT NOT NULL,         -- e.g. "Max-Q", "MECO", "Stage Sep"
   t_offset_s  INTEGER NOT NULL,      -- seconds relative to T-0 (negative = before)
-  fire_at     INTEGER,               -- absolute unix timestamp; computed from t0
-  sent_at     INTEGER,               -- NULL until dispatched
+  fire_at          INTEGER,           -- absolute unix timestamp; computed from t0
+  sent_at          INTEGER,           -- NULL until checkmark push dispatched
+  transition_sent  INTEGER NOT NULL DEFAULT 0,  -- 1 after countdown-to-next push dispatched (~60s after sent_at)
   UNIQUE(launch_id, t_offset_s)
 );
 
@@ -116,3 +121,23 @@ CREATE TABLE IF NOT EXISTS launch_opt_outs (
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_launch ON subscriptions(launch_id);
 CREATE INDEX IF NOT EXISTS idx_launches_t0 ON launches(t0);
+
+-- Master on/off + source list for news notifications per user
+CREATE TABLE IF NOT EXISTS user_news_preferences (
+  user_id    TEXT    PRIMARY KEY,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Which news sources a user has selected (empty = all sources)
+CREATE TABLE IF NOT EXISTS user_news_sources (
+  user_id TEXT NOT NULL,
+  source  TEXT NOT NULL,
+  PRIMARY KEY (user_id, source)
+);
+
+-- Deduplication log — prevents re-sending the same article
+CREATE TABLE IF NOT EXISTS news_dispatch_log (
+  article_id    INTEGER PRIMARY KEY,
+  dispatched_at INTEGER NOT NULL DEFAULT (unixepoch())
+);

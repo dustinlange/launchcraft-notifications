@@ -67,6 +67,8 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
           windowEnd: body.windowEnd ?? null,
           currentEventName: null,
           currentEventDate: null,
+          nextEventName: null,
+          nextEventDate: null,
           statusId: body.ll2StatusId,
         },
         alertTitle: statusChanged ? `${body.name}: ${statusLabel(body.ll2StatusId)}` : undefined,
@@ -79,6 +81,8 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
     const wantsStatusChange = sub.notify_status_change === 1   // NULL → default off
     const wantsNetChange    = sub.notify_net_change    === 1   // NULL → default off
 
+    const launchImageUrl = sub.image_url ?? sub.rocket_image_url ?? undefined
+
     if (statusChanged && (isTerminal ? wantsTerminal : wantsStatusChange)) {
       await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
         title: 'Status Changed',
@@ -87,6 +91,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
           : `${body.name} status has changed from ${statusLabel(prev.ll2_status_id)} to ${statusLabel(body.ll2StatusId)}`,
         launchId: body.id,
         type: 'status_change',
+        imageUrl: launchImageUrl,
       })
     } else if (t0Changed && body.t0 && wantsNetChange) {
       await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
@@ -96,6 +101,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
         type: 'schedule_change',
         t0: body.t0,
         launchName: body.name,
+        imageUrl: launchImageUrl,
       })
     }
   }))

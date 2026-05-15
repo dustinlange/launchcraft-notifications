@@ -16,22 +16,22 @@ const WINDOWS: ReminderWindow[] = [
     label: '24h',
     offsetS: 24 * 60 * 60,
     toleranceS: 90,
-    title: (name) => `${name}`,
-    body: () => 'Launching in 24 hours',
+    title: () => 'Launch Reminder',
+    body: (name) => `${name} is launching in 24 hours!`,
   },
   {
     label: '1h',
     offsetS: 60 * 60,
     toleranceS: 90,
-    title: (name) => `${name}`,
-    body: () => 'Launching in 1 hour',
+    title: () => 'Launch Reminder',
+    body: (name) => `${name} is launching in 1 hour!`,
   },
   {
     label: '10m',
     offsetS: 10 * 60,
     toleranceS: 90,
-    title: (name) => `${name}`,
-    body: () => 'Launching in 10 minutes',
+    title: () => 'Launch Reminder',
+    body: (name) => `${name} is launching in 10 minutes!`,
   },
 ]
 
@@ -54,6 +54,7 @@ export async function dispatchReminders(env: Env) {
         body: window.body(sub.launch_name),
         launchId: sub.launch_id,
         type: 'reminder',
+        imageUrl: sub.image_url ?? sub.rocket_image_url ?? undefined,
       })
 
       if (result.ok) {

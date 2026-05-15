@@ -1,5 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
+import { backfillAttributesJson } from '../db/queries'
 
 // POST /test/trigger
 // Reschedules a launch to T-0 a few minutes from now, inserts tight timeline events,
@@ -28,7 +29,7 @@ export async function handleTestTrigger(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'missing launchId or userId' }, 400)
   }
 
-  const launch = await c.env.DB.prepare('SELECT * FROM launches WHERE id = ?').bind(launchId).first<{ id: string; name: string }>()
+  const launch = await c.env.DB.prepare('SELECT * FROM launches WHERE id = ?').bind(launchId).first<{ id: string; name: string; mission_name: string | null; rocket: string; provider: string | null; provider_logo_url: string | null; ll2_status_id: number }>()
   if (!launch) return c.json({ error: 'launch not found' }, 404)
 
   const sub = await c.env.DB.prepare(
@@ -79,6 +80,9 @@ export async function handleTestTrigger(c: Context<{ Bindings: Env }>) {
       `).bind(launchId, eventLabels[String(offset)], offset, t0 + offset)
     ),
   ])
+
+  // Backfill attributes_json for this subscription if missing (common for fan-out subscriptions)
+  await backfillAttributesJson(c.env.DB, launchId, launch.name, launch.mission_name, launch.rocket, launch.provider, launch.provider_logo_url, 1)
 
   return c.json({
     ok: true,

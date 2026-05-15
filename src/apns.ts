@@ -14,14 +14,37 @@ export interface ApnsConfig {
 
 // Live Activity content-state.
 // Field names and types must exactly match LaunchActivityContentState in the iOS app.
-// Dates are Unix timestamps (seconds); ActivityKit decodes them via JSONDecoder default (.secondsSince1970).
+// Callers pass Unix timestamps (seconds since 1970). Before sending, we convert them to
+// Apple reference date (seconds since Jan 1 2001) because Swift's JSONDecoder default
+// date strategy is .deferredToDate, which interprets numbers as seconds since 2001.
 export interface LaunchContentState {
   netDate: number | null          // T-0 Unix timestamp
   windowStart: number | null      // launch window open
   windowEnd: number | null        // launch window close
-  currentEventName: string | null // most-recently-passed timeline event
+  currentEventName: string | null // most-recently-passed timeline event (shown with checkmark)
   currentEventDate: number | null // absolute Unix timestamp when that event fired
+  nextEventName: string | null    // next upcoming timeline event (shown with countdown)
+  nextEventDate: number | null    // absolute Unix timestamp when next event will fire
   statusId: number                // LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
+}
+
+// Seconds between Unix epoch (Jan 1 1970) and Apple reference date (Jan 1 2001).
+const APPLE_EPOCH_OFFSET = 978307200
+
+// Converts a LaunchContentState with Unix timestamps to Apple reference date timestamps
+// for the 'content-state' field in an APNs Live Activity payload.
+function toAppleContentState(cs: LaunchContentState): Record<string, unknown> {
+  const toApple = (unix: number | null) => unix !== null ? unix - APPLE_EPOCH_OFFSET : null
+  return {
+    netDate:          toApple(cs.netDate),
+    windowStart:      toApple(cs.windowStart),
+    windowEnd:        toApple(cs.windowEnd),
+    currentEventName: cs.currentEventName,
+    currentEventDate: toApple(cs.currentEventDate),
+    nextEventName:    cs.nextEventName,
+    nextEventDate:    toApple(cs.nextEventDate),
+    statusId:         cs.statusId,
+  }
 }
 
 export interface LiveActivityPayload {
@@ -36,9 +59,11 @@ export interface AlertPayload {
   title: string
   body: string
   launchId: string
-  type: 'reminder' | 'status_change' | 'schedule_change'
+  type: 'reminder' | 'status_change' | 'schedule_change' | 'news'
   t0?: number        // unix timestamp; included for schedule_change so iOS can format locally
   launchName?: string
+  articleUrl?: string  // included for news notifications so iOS can open the article on tap
+  imageUrl?: string    // included for news notifications so the Notification Service Extension can attach the image
 }
 
 function base64url(buffer: ArrayBuffer | Uint8Array): string {
@@ -129,14 +154,14 @@ export async function pushLiveActivityUpdate(
   const aps: Record<string, unknown> = {
     timestamp: Math.floor(Date.now() / 1000),
     event: update.event,
-    'content-state': update.contentState,
+    'content-state': toAppleContentState(update.contentState),
   }
 
   if (update.alertTitle) {
     aps.alert = { title: update.alertTitle, body: update.alertBody }
   }
   if (update.event === 'end' && update.dismissalDate) {
-    aps['dismissal-date'] = update.dismissalDate
+    aps['dismissal-date'] = update.dismissalDate - APPLE_EPOCH_OFFSET
   }
 
   return sendApns(kv, config, activityToken, 'liveactivity', topic, { aps })
@@ -159,13 +184,13 @@ export async function pushLiveActivityStart(
   const aps: Record<string, unknown> = {
     timestamp: Math.floor(Date.now() / 1000),
     event: 'start',
-    'content-state': params.contentState,
+    'content-state': toAppleContentState(params.contentState),
     'attributes-type': 'LaunchActivityAttributes',
     attributes: params.attributes,
     alert: { title: params.alertTitle, body: params.alertBody },
-    'dismissal-date': params.dismissalDate,
+    'dismissal-date': params.dismissalDate - APPLE_EPOCH_OFFSET,
   }
-  if (params.staleDate) aps['stale-date'] = params.staleDate
+  if (params.staleDate) aps['stale-date'] = params.staleDate - APPLE_EPOCH_OFFSET
 
   return sendApns(kv, config, pushToStartToken, 'liveactivity', topic, { aps })
 }
@@ -180,13 +205,15 @@ export async function pushAlertNotification(
     aps: {
       alert: { title: alert.title, body: alert.body },
       sound: 'default',
-      // Required for Notification Service Extension to run
-      ...(alert.type === 'schedule_change' ? { 'mutable-content': 1 } : {}),
+      // Required for Notification Service Extension to run (format body or attach image)
+      ...(alert.type === 'schedule_change' || alert.imageUrl !== undefined ? { 'mutable-content': 1 } : {}),
     },
     launchId: alert.launchId,
     notificationType: alert.type,
     ...(alert.t0 !== undefined ? { t0: alert.t0 } : {}),
     ...(alert.launchName !== undefined ? { launchName: alert.launchName } : {}),
+    ...(alert.articleUrl !== undefined ? { articleUrl: alert.articleUrl } : {}),
+    ...(alert.imageUrl !== undefined ? { imageUrl: alert.imageUrl } : {}),
   }
 
   return sendApns(kv, config, deviceToken, 'alert', config.bundleId, payload)

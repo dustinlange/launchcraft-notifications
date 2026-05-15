@@ -30,6 +30,8 @@ export async function pollNoTimelineLaunches(env: Env) {
           windowEnd: launch.window_end,
           currentEventName: null,
           currentEventDate: null,
+          nextEventName: null,
+          nextEventDate: null,
           statusId: launch.ll2_status_id,
         },
       })

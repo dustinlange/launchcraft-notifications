@@ -6,7 +6,7 @@ import { sendPushToStart } from './register'
 
 const START_WINDOW_S = 60 * 60  // start activities when T-0 is within 1 hour
 
-// Runs every minute via cron — starts Live Activities for subscriptions within 24h of launch
+// Runs every minute via cron — starts Live Activities for subscriptions within 1h of launch
 export async function dispatchActivityStarts(env: Env) {
   const now = Math.floor(Date.now() / 1000)
   const { results: subs } = await getSubscriptionsNeedingStart(env.DB, now + START_WINDOW_S)
@@ -23,8 +23,11 @@ export async function dispatchActivityStarts(env: Env) {
         netDate: sub.t0,
         windowStart: sub.window_start,
         windowEnd: sub.window_end,
+        // No events have fired yet — show the first event as the upcoming countdown
         currentEventName: null,
         currentEventDate: null,
+        nextEventName: sub.first_event_name ?? null,
+        nextEventDate: sub.first_event_fire_at ?? null,
         statusId: sub.ll2_status_id,
       },
       sub.launch_name
