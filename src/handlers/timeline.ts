@@ -1,6 +1,6 @@
 import { Env } from '../index'
 import { getDueTimelineEvents, getDueTransitionEvents, getSubscriptionsForLaunch, markEventSent, markTransitionSent } from '../db/queries'
-import { pushLiveActivityUpdate } from '../apns'
+import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 
 // Runs every minute via cron trigger
@@ -30,7 +30,7 @@ export async function dispatchTimelineEvents(env: Env) {
       const currentEventDate = event.fire_at ?? null
 
       await Promise.allSettled(activeSubs.map(sub =>
-        pushLiveActivityUpdate(env.KV, apnsConfig, sub.activity_token!, {
+        pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
           event: 'update',
           contentState: {
             netDate: event.t0,
@@ -62,7 +62,7 @@ export async function dispatchTimelineEvents(env: Env) {
     const activeSubs = subs.filter(s => s.activity_token)
 
     await Promise.allSettled(activeSubs.map(sub =>
-      pushLiveActivityUpdate(env.KV, apnsConfig, sub.activity_token!, {
+      pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
         event: 'update',
         contentState: {
           netDate: transition.t0,

@@ -1,6 +1,6 @@
 import { Env } from '../index'
 import { getSubscriptionsNeedingStart, getLaunchesNeedingEnd, markEndDispatched, getSubscriptionsForLaunch } from '../db/queries'
-import { pushLiveActivityUpdate } from '../apns'
+import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 import { sendPushToStart } from './register'
 
@@ -46,7 +46,7 @@ export async function dispatchActivityEnds(env: Env) {
     const activeSubs = subs.filter(s => s.activity_token)
 
     await Promise.allSettled(activeSubs.map(async sub => {
-      const result = await pushLiveActivityUpdate(env.KV, apnsConfig, sub.activity_token!, {
+      const result = await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
         event: 'end',
         contentState: {
           netDate: launch.t0,

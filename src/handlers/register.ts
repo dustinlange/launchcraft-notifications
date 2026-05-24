@@ -55,6 +55,29 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     await upsertTimelineEvents(c.env.DB, launch.id, launch.timeline, launch.t0)
   }
 
+  // If this device token is already registered under a different user ID (e.g. after a
+  // reinstall that cleared UserDefaults and generated a new UUID), migrate all subscriptions
+  // from the old user ID to the new one so the user doesn't accumulate duplicate records.
+  const existingDevice = await c.env.DB.prepare(
+    'SELECT user_id FROM user_devices WHERE device_token = ? AND user_id != ?'
+  ).bind(deviceToken, userId).first<{ user_id: string }>()
+
+  if (existingDevice) {
+    const oldUserId = existingDevice.user_id
+    console.log(`register: merging old user ${oldUserId} into ${userId} (same device token)`)
+    await c.env.DB.batch([
+      // Re-home subscriptions that don't already exist under the new user ID
+      c.env.DB.prepare(`
+        INSERT OR IGNORE INTO subscriptions (id, launch_id, user_id, activity_token, activity_id, attributes_json, start_dispatched, reminded_24h, reminded_1h, reminded_10m, created_at)
+        SELECT id, launch_id, ?, activity_token, activity_id, attributes_json, start_dispatched, reminded_24h, reminded_1h, reminded_10m, created_at
+        FROM subscriptions WHERE user_id = ?
+      `).bind(userId, oldUserId),
+      c.env.DB.prepare('DELETE FROM subscriptions WHERE user_id = ?').bind(oldUserId),
+      c.env.DB.prepare('DELETE FROM user_devices WHERE user_id = ?').bind(oldUserId),
+      c.env.DB.prepare('DELETE FROM user_preferences WHERE user_id = ?').bind(oldUserId),
+    ])
+  }
+
   await upsertUserDevice(c.env.DB, userId, deviceToken, pushToStartToken ?? null)
 
   await upsertSubscription(c.env.DB, {

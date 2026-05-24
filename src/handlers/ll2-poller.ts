@@ -1,7 +1,8 @@
 import { Env } from '../index'
 import { getLaunch, upsertLaunch, upsertTimelineEvents, recalculateTimelineFireAt, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, getLaunchesNearT0, fanOutProviderSubscriptions, fanOutLocationSubscriptions, fanOutAllUpcomingSubscriptions, backfillAttributesJson, resetReminderFlags, TERMINAL_IDS, LL2_STATUS } from '../db/queries'
 import { createLL2Client, mapT0, parseRelativeTime } from '../ll2'
-import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
+import { pushAlertNotification } from '../apns'
+import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 
 export async function pollLL2(env: Env) {
@@ -15,16 +16,29 @@ export async function pollLL2(env: Env) {
   await Promise.allSettled(missed.map(r => syncLaunchById(env, r.launch_id)))
 }
 
-// Runs every minute. Re-syncs any subscribed launch whose T-0 is within the next
-// 90 seconds (or up to 30s in the past, to handle slightly-late cron ticks).
-// This ensures Live Activities reflect last-second scrubs or holds before the
-// timeline dispatcher fires the liftoff event.
+// Runs every minute. Re-syncs subscribed launches in two windows:
+//
+//  1. Pre-reminder window (T-0 within 15 minutes): catches late NET changes before the
+//     10-minute reminder fires, ensuring reminder flags are reset if T-0 shifts.
+//
+//  2. Near-T-0 window (T-0 within 90s or up to 30s in the past): catches last-second
+//     scrubs or holds before the timeline dispatcher fires the liftoff event.
+//
+// Both windows are unioned so a single set of LL2 fetches covers both cases.
 export async function prefetchNearT0Launches(env: Env) {
   const now = Math.floor(Date.now() / 1000)
-  const { results } = await getLaunchesNearT0(env.DB, now - 30, now + 90)
-  if (results.length === 0) return
-  console.log(`prefetchNearT0: syncing ${results.length} launch(es) near T-0`)
-  await Promise.allSettled(results.map(r => syncLaunchById(env, r.id)))
+  // Window 1: within next 15 minutes (covers 10m reminder + tolerance)
+  const reminderWindow = await getLaunchesNearT0(env.DB, now, now + 15 * 60)
+  // Window 2: ±90s of T-0 (covers liftoff accuracy)
+  const liftoffWindow = await getLaunchesNearT0(env.DB, now - 30, now + 90)
+
+  const ids = new Set([
+    ...reminderWindow.results.map(r => r.id),
+    ...liftoffWindow.results.map(r => r.id),
+  ])
+  if (ids.size === 0) return
+  console.log(`prefetchNearT0: syncing ${ids.size} launch(es) (reminder or liftoff window)`)
+  await Promise.allSettled([...ids].map(id => syncLaunchById(env, id)))
 }
 
 export async function syncLaunchById(env: Env, id: string) {
@@ -135,7 +149,7 @@ async function syncLaunch(env: Env, ll2: {
 
   await Promise.allSettled(subs.map(async (sub) => {
     if (sub.activity_token) {
-      await pushLiveActivityUpdate(env.KV, apnsConfig, sub.activity_token, {
+      await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token, {
         event: isTerminal ? 'end' : 'update',
         contentState: {
           netDate: t0,

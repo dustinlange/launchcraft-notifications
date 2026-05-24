@@ -725,3 +725,9 @@ export function recalculateTimelineFireAt(db: D1Database, launchId: string, t0: 
     WHERE launch_id = ?
   `).bind(t0, t0, t0, launchId).run()
 }
+
+export function clearActivityToken(db: D1Database, subscriptionId: string) {
+  return db.prepare(
+    'UPDATE subscriptions SET activity_token = NULL, activity_id = NULL WHERE id = ?'
+  ).bind(subscriptionId).run()
+}

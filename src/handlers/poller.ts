@@ -1,6 +1,6 @@
 import { Env } from '../index'
 import { getActiveNoTimelineLaunches, getSubscriptionsForLaunch } from '../db/queries'
-import { pushLiveActivityUpdate } from '../apns'
+import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 
 // Runs every 5 minutes via cron trigger (controlled by modulo check inside the 1-min cron)
@@ -22,7 +22,7 @@ export async function pollNoTimelineLaunches(env: Env) {
     if (!launch.t0 || launch.t0 - now > 24 * 60 * 60) return
 
     await Promise.allSettled(activeSubs.map(sub =>
-      pushLiveActivityUpdate(env.KV, apnsConfig, sub.activity_token!, {
+      pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
         event: 'update',
         contentState: {
           netDate: launch.t0,

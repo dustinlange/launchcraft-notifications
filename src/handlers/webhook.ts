@@ -1,7 +1,8 @@
 import { Context } from 'hono'
 import { Env } from '../index'
 import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, TERMINAL_IDS, LL2_STATUS } from '../db/queries'
-import { pushLiveActivityUpdate, pushAlertNotification } from '../apns'
+import { pushAlertNotification } from '../apns'
+import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 
 // POST /webhook
 export async function handleWebhook(c: Context<{ Bindings: Env }>) {
@@ -59,7 +60,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
 
   await Promise.allSettled(subs.map(async (sub) => {
     if (sub.activity_token) {
-      await pushLiveActivityUpdate(c.env.KV, apnsConfig, sub.activity_token, {
+      await pushLiveActivityUpdateAndClearOnFailure(c.env.DB, c.env.KV, apnsConfig, sub.id, sub.activity_token, {
         event: isTerminal ? 'end' : 'update',
         contentState: {
           netDate: body.t0,

@@ -10,6 +10,8 @@ import { handleGetPreferences, handleSavePreferences } from './handlers/preferen
 import { handleStartup } from './handlers/startup'
 import { handleTestTrigger } from './handlers/test'
 import { dispatchNewsNotifications, handleGetNewsSources, handleGetNewsPreferences, handleSaveNewsPreferences } from './handlers/news'
+import { handleLL2Proxy } from './handlers/ll2-proxy'
+import { handleSNAPIProxy } from './handlers/snapi-proxy'
 
 export interface Env {
   DB: D1Database
@@ -72,6 +74,14 @@ app.get('/news-preferences', handleGetNewsPreferences)
 app.post('/news-preferences', handleSaveNewsPreferences)
 
 app.get('/startup', handleStartup)
+
+// LL2 proxy — transparent pass-through with KV caching
+// Maps /ll2/* → https://ll.thespacedevs.com/2.2.0/*
+app.get('/ll2/*', handleLL2Proxy)
+
+// SNAPI proxy — transparent pass-through with KV caching
+// Maps /snapi/* → https://api.spaceflightnewsapi.net/v4/*
+app.get('/snapi/*', handleSNAPIProxy)
 app.post('/test/trigger', handleTestTrigger)
 app.get('/health', (c) => c.json({ ok: true }))
 
@@ -85,8 +95,9 @@ export default {
     ctx.waitUntil(dispatchTimelineEvents(env))
     ctx.waitUntil(dispatchActivityStarts(env))
     ctx.waitUntil(dispatchActivityEnds(env))
-    ctx.waitUntil(dispatchReminders(env))
-    ctx.waitUntil(prefetchNearT0Launches(env))
+    // Prefetch runs first and awaits completion so that any T-0 changes (and their
+    // resetReminderFlags calls) are committed to the DB before reminders are dispatched.
+    ctx.waitUntil(prefetchNearT0Launches(env).then(() => dispatchReminders(env)))
 
     // Every 5 minutes
     if (now % 300 < 60) {
