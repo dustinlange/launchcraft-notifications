@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, TERMINAL_IDS, LL2_STATUS } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertTimelineEvents, getSubscriptionsForLaunch, markSuccessAt, TERMINAL_IDS, LL2_STATUS, clearDeviceToken } from '../db/queries'
 import { pushAlertNotification } from '../apns'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 
@@ -84,8 +84,15 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
 
     const launchImageUrl = sub.image_url ?? sub.rocket_image_url ?? undefined
 
+    const handleStaleToken = async (result: { ok: boolean; status: number }) => {
+      if (!result.ok && (result.status === 410 || result.status === 400)) {
+        console.warn(`Clearing stale device token for ${sub.user_id} after APNs ${result.status}`)
+        await clearDeviceToken(c.env.DB, sub.user_id, sub.device_token)
+      }
+    }
+
     if (statusChanged && (isTerminal ? wantsTerminal : wantsStatusChange)) {
-      await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
+      const result = await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
         title: 'Status Changed',
         body: isTerminal
           ? statusBody(body.ll2StatusId, body.name, body.rocket)
@@ -94,8 +101,9 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
         type: 'status_change',
         imageUrl: launchImageUrl,
       })
+      await handleStaleToken(result)
     } else if (t0Changed && body.t0 && wantsNetChange) {
-      await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
+      const result = await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
         title: 'Schedule Changed',
         body: new Date(body.t0 * 1000).toUTCString(),
         launchId: body.id,
@@ -104,6 +112,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
         launchName: body.name,
         imageUrl: launchImageUrl,
       })
+      await handleStaleToken(result)
     }
   }))
 

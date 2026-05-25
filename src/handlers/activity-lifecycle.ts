@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getSubscriptionsNeedingStart, getLaunchesNeedingEnd, markEndDispatched, getSubscriptionsForLaunch } from '../db/queries'
+import { getSubscriptionsNeedingStart, getLaunchesNeedingEnd, markEndDispatched, getSubscriptionsForLaunch, clearPushToStartToken } from '../db/queries'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 import { sendPushToStart } from './register'
@@ -31,6 +31,32 @@ export async function dispatchActivityStarts(env: Env) {
       sub.launch_name
     )
   ))
+}
+
+// Runs every minute via cron — detects push-to-start tokens that APNs silently accepted
+// but never delivered (start_dispatched=1, activity_token=NULL, T0 passed > 5 min ago).
+// These are typically rotated tokens APNs hasn't invalidated yet. Clears them so the user
+// gets a clean slate when they next open the app and re-register.
+export async function detectSilentPushToStartFailures(env: Env) {
+  const now = Math.floor(Date.now() / 1000)
+  const staleWindowS = 5 * 60 // 5 minutes past T0 — enough time for the activity token to arrive
+  const { results } = await env.DB.prepare(`
+    SELECT s.id, s.user_id, s.launch_id, l.name as launch_name, ud.push_to_start_token
+    FROM subscriptions s
+    JOIN launches l ON l.id = s.launch_id
+    JOIN user_devices ud ON ud.user_id = s.user_id
+    WHERE s.start_dispatched = 1
+      AND s.activity_token IS NULL
+      AND l.t0 IS NOT NULL
+      AND l.t0 < ? - ${staleWindowS}
+      AND l.end_dispatched = 0
+      AND ud.push_to_start_token IS NOT NULL
+  `).bind(now).all<{ id: string; user_id: string; launch_id: string; launch_name: string; push_to_start_token: string }>()
+
+  for (const sub of results) {
+    console.warn(`[push-to-start] silent failure detected: start_dispatched=1 but no activity_token for ${sub.launch_id}/${sub.user_id} — clearing stale push-to-start token`)
+    await clearPushToStartToken(env.DB, sub.user_id, sub.push_to_start_token)
+  }
 }
 
 // Runs every minute via cron — ends Live Activities 30 minutes after a successful launch

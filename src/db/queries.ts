@@ -615,6 +615,51 @@ export function deleteLaunchOptOut(db: D1Database, userId: string, launchId: str
     .bind(userId, launchId).run()
 }
 
+/**
+ * Clears opt-outs for launches now covered by the given section subscription config.
+ * Called when a user adds or updates a section subscription so that previously opted-out
+ * launches that fall under the new config are re-included in fan-out.
+ *
+ * allUpcoming=true  → clear all opt-outs for this user (section covers everything)
+ * providerIds/locationIds → clear opt-outs only for launches matching those filters
+ */
+export function clearOptOutsForSectionSubscription(
+  db: D1Database,
+  userId: string,
+  allUpcoming: boolean,
+  providerIds: number[],
+  locationIds: number[]
+) {
+  if (allUpcoming) {
+    // Section covers all upcoming launches — remove every opt-out for this user
+    return db.prepare('DELETE FROM launch_opt_outs WHERE user_id = ?')
+      .bind(userId).run()
+  }
+
+  if (providerIds.length === 0 && locationIds.length === 0) {
+    // No coverage — nothing to clear
+    return Promise.resolve()
+  }
+
+  const providerPlaceholders = providerIds.map(() => '?').join(', ')
+  const locationPlaceholders = locationIds.map(() => '?').join(', ')
+
+  const conditions: string[] = []
+  const bindings: (string | number)[] = [userId]
+
+  if (providerIds.length > 0) {
+    conditions.push(`launch_id IN (SELECT id FROM launches WHERE provider_id IN (${providerPlaceholders}))`)
+    bindings.push(...providerIds)
+  }
+  if (locationIds.length > 0) {
+    conditions.push(`launch_id IN (SELECT id FROM launches WHERE pad_location_id IN (${locationPlaceholders}))`)
+    bindings.push(...locationIds)
+  }
+
+  const sql = `DELETE FROM launch_opt_outs WHERE user_id = ? AND (${conditions.join(' OR ')})`
+  return (db.prepare(sql) as D1PreparedStatement).bind(...bindings).run()
+}
+
 export function markReminderSent(db: D1Database, subscriptionId: string, windowLabel: '24h' | '1h' | '10m') {
   const col = windowLabel === '24h' ? 'reminded_24h' : windowLabel === '1h' ? 'reminded_1h' : 'reminded_10m'
   return db.prepare(`UPDATE subscriptions SET ${col} = 1 WHERE id = ?`).bind(subscriptionId).run()
@@ -730,4 +775,18 @@ export function clearActivityToken(db: D1Database, subscriptionId: string) {
   return db.prepare(
     'UPDATE subscriptions SET activity_token = NULL, activity_id = NULL WHERE id = ?'
   ).bind(subscriptionId).run()
+}
+
+/** Clears a stale APNs device token for a user (e.g. after a 410 Unregistered response). */
+export function clearDeviceToken(db: D1Database, userId: string, deviceToken: string) {
+  return db.prepare(
+    'UPDATE user_devices SET device_token = NULL WHERE user_id = ? AND device_token = ?'
+  ).bind(userId, deviceToken).run()
+}
+
+/** Clears a stale push-to-start token for a user (e.g. after a 410 Unregistered response). */
+export function clearPushToStartToken(db: D1Database, userId: string, pushToStartToken: string) {
+  return db.prepare(
+    'UPDATE user_devices SET push_to_start_token = NULL WHERE user_id = ? AND push_to_start_token = ?'
+  ).bind(userId, pushToStartToken).run()
 }

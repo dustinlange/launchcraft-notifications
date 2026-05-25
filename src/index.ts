@@ -4,7 +4,7 @@ import { handleWebhook } from './handlers/webhook'
 import { dispatchTimelineEvents } from './handlers/timeline'
 import { pollNoTimelineLaunches } from './handlers/poller'
 import { pollLL2, prefetchNearT0Launches } from './handlers/ll2-poller'
-import { dispatchActivityStarts, dispatchActivityEnds } from './handlers/activity-lifecycle'
+import { dispatchActivityStarts, dispatchActivityEnds, detectSilentPushToStartFailures } from './handlers/activity-lifecycle'
 import { dispatchReminders } from './handlers/reminders'
 import { handleGetPreferences, handleSavePreferences } from './handlers/preferences'
 import { handleStartup } from './handlers/startup'
@@ -26,6 +26,7 @@ export interface Env {
   LL2_API_KEY: string
   API_KEY: string
   API_KEY_PREVIOUS?: string  // kept during key rotation so old app versions keep working
+  HEALTHCHECK_URL?: string   // dead man's switch — ping URL from healthchecks.io
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -95,15 +96,26 @@ export default {
     ctx.waitUntil(dispatchTimelineEvents(env))
     ctx.waitUntil(dispatchActivityStarts(env))
     ctx.waitUntil(dispatchActivityEnds(env))
-    // Prefetch runs first and awaits completion so that any T-0 changes (and their
-    // resetReminderFlags calls) are committed to the DB before reminders are dispatched.
-    ctx.waitUntil(prefetchNearT0Launches(env).then(() => dispatchReminders(env)))
+    ctx.waitUntil(detectSilentPushToStartFailures(env))
+    // Prefetch runs first so that any T-0 changes (and their resetReminderFlags calls) are
+    // committed to the DB before reminders are dispatched. A prefetch failure is caught and
+    // logged rather than propagated — reminders must still run even if prefetch throws.
+    ctx.waitUntil(
+      prefetchNearT0Launches(env)
+        .catch(err => console.error('[prefetch] failed, reminders will still run:', err))
+        .then(() => dispatchReminders(env))
+    )
 
     // Every 5 minutes
     if (now % 300 < 60) {
       ctx.waitUntil(pollLL2(env))
       ctx.waitUntil(pollNoTimelineLaunches(env))
       ctx.waitUntil(dispatchNewsNotifications(env))
+    }
+
+    // Dead man's switch — ping healthchecks.io so we get alerted if the cron stops firing
+    if (env.HEALTHCHECK_URL) {
+      ctx.waitUntil(fetch(env.HEALTHCHECK_URL).catch(() => {}))
     }
   },
 }

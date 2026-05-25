@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertSectionSubscription, deleteSectionSubscription, insertLaunchOptOut, deleteLaunchOptOut } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertSectionSubscription, deleteSectionSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForSectionSubscription } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -36,12 +36,16 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
   await upsertLaunch(c.env.DB, {
     id: launch.id,
     name: launch.name,
+    mission_name: null,
     rocket: launch.rocket,
     pad: launch.pad,
     pad_location: null,
     pad_location_id: null,
     provider: null,
     provider_id: null,
+    provider_logo_url: null,
+    image_url: null,
+    rocket_image_url: null,
     t0: launch.t0 ?? null,
     window_start: null,
     window_end: null,
@@ -307,6 +311,9 @@ export async function handleSubscribeToSection(c: Context<{ Bindings: Env }>) {
 
   const allUpcoming = providerIds.length === 0 && locationIds.length === 0
   await upsertSectionSubscription(c.env.DB, userId, sectionId, allUpcoming, providerIds, locationIds)
+  // Re-subscribing to a section should clear opt-outs for launches now covered by it,
+  // so fan-out will include them again on the next poll.
+  await clearOptOutsForSectionSubscription(c.env.DB, userId, allUpcoming, providerIds, locationIds)
   return c.json({ ok: true })
 }
 
@@ -360,11 +367,18 @@ export async function sendPushToStart(
     })
 
     if (!result.ok) {
-      // Roll back the claim so the next cron cycle can retry
-      await env.DB.prepare(
-        'UPDATE subscriptions SET start_dispatched = 0 WHERE user_id = ? AND launch_id = ?'
-      ).bind(userId, launchId).run()
       console.error(`push-to-start failed for ${launchId}/${userId}: ${result.status} ${result.body}`)
+      if (result.status === 410 || result.status === 400) {
+        // Stale push-to-start token — clear it so we stop retrying with a dead token.
+        // The user will get a fresh token registered when they next open the app.
+        console.warn(`Clearing stale push-to-start token for ${userId} after APNs ${result.status}`)
+        await clearPushToStartToken(env.DB, userId, pushToStartToken)
+      } else {
+        // Transient failure — roll back the claim so the next cron cycle can retry
+        await env.DB.prepare(
+          'UPDATE subscriptions SET start_dispatched = 0 WHERE user_id = ? AND launch_id = ?'
+        ).bind(userId, launchId).run()
+      }
     }
   } catch (err) {
     console.error(`sendPushToStart error for ${launchId}/${userId}:`, err)

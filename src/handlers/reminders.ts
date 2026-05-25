@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getSubscriptionsNeedingReminder, markReminderSent } from '../db/queries'
+import { getSubscriptionsNeedingReminder, markReminderSent, clearDeviceToken } from '../db/queries'
 import { pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
 
@@ -61,6 +61,12 @@ export async function dispatchReminders(env: Env) {
         await markReminderSent(env.DB, sub.id, window.label)
       } else {
         console.error(`reminder ${window.label} failed for ${sub.launch_id}/${sub.user_id}: ${result.status} ${result.body}`)
+        // Stale device token — clear it so future pushes don't keep hitting a dead token.
+        // The user will get a fresh token registered when they next open the app.
+        if (result.status === 410 || result.status === 400) {
+          console.warn(`Clearing stale device token for ${sub.user_id} after APNs ${result.status}`)
+          await clearDeviceToken(env.DB, sub.user_id, sub.device_token)
+        }
       }
     }))
   }))

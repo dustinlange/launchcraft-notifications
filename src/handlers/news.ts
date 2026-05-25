@@ -8,6 +8,7 @@ import {
   isArticleDispatched,
   markArticleDispatched,
   pruneOldDispatchLog,
+  clearDeviceToken,
 } from '../db/queries'
 import { pushAlertNotification, ApnsConfig } from '../apns'
 
@@ -61,8 +62,8 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
     }
 
     await Promise.allSettled(
-      users.map(u =>
-        pushAlertNotification(env.KV, apnsConfig, u.device_token, {
+      users.map(async u => {
+        const result = await pushAlertNotification(env.KV, apnsConfig, u.device_token, {
           title: article.news_site,
           body: article.authors?.length
             ? `${article.title} | ${article.authors[0].name}`
@@ -72,7 +73,11 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
           articleUrl: article.url,
           imageUrl: article.image_url ?? undefined,
         })
-      )
+        if (!result.ok && (result.status === 410 || result.status === 400)) {
+          console.warn(`Clearing stale device token for ${u.user_id} after APNs ${result.status}`)
+          await clearDeviceToken(env.DB, u.user_id, u.device_token)
+        }
+      })
     )
 
     await markArticleDispatched(env.DB, article.id)
