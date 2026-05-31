@@ -624,6 +624,9 @@ export interface UserPreferences {
   notify_terminal_status: number
   auto_live_activity: number
   live_activity_window: number
+  event_remind_24h: number
+  event_remind_1h: number
+  event_remind_10m: number
 }
 
 export function getUserPreferences(db: D1Database, userId: string) {
@@ -641,13 +644,18 @@ export function upsertUserPreferences(
   notifyTerminalStatus: boolean,
   autoLiveActivity: boolean,
   liveActivityWindow: number,
+  eventRemind24h: boolean,
+  eventRemind1h: boolean,
+  eventRemind10m: boolean,
 ) {
   return db.prepare(`
     INSERT INTO user_preferences
       (user_id, remind_24h, remind_1h, remind_10m,
        notify_net_change, notify_status_change, notify_terminal_status,
-       auto_live_activity, live_activity_window, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+       auto_live_activity, live_activity_window,
+       event_remind_24h, event_remind_1h, event_remind_10m,
+       updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(user_id) DO UPDATE SET
       remind_24h = excluded.remind_24h,
       remind_1h = excluded.remind_1h,
@@ -657,12 +665,16 @@ export function upsertUserPreferences(
       notify_terminal_status = excluded.notify_terminal_status,
       auto_live_activity = excluded.auto_live_activity,
       live_activity_window = excluded.live_activity_window,
+      event_remind_24h = excluded.event_remind_24h,
+      event_remind_1h = excluded.event_remind_1h,
+      event_remind_10m = excluded.event_remind_10m,
       updated_at = unixepoch()
   `).bind(
     userId,
     remind24h ? 1 : 0, remind1h ? 1 : 0, remind10m ? 1 : 0,
     notifyNetChange ? 1 : 0, notifyStatusChange ? 1 : 0, notifyTerminalStatus ? 1 : 0,
     autoLiveActivity ? 1 : 0, liveActivityWindow,
+    eventRemind24h ? 1 : 0, eventRemind1h ? 1 : 0, eventRemind10m ? 1 : 0,
   ).run()
 }
 
@@ -881,8 +893,8 @@ export interface LL2Event {
 
 export function upsertEvent(db: D1Database, event: LL2Event) {
   return db.prepare(`
-    INSERT INTO events (id, name, event_type_id, event_type, description, location, date, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO events (id, name, event_type_id, event_type, description, location, date, image_url, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       event_type_id = excluded.event_type_id,
@@ -890,16 +902,19 @@ export function upsertEvent(db: D1Database, event: LL2Event) {
       description = COALESCE(excluded.description, description),
       location = COALESCE(excluded.location, location),
       date = excluded.date,
+      image_url = COALESCE(excluded.image_url, image_url),
       last_updated = unixepoch()
-  `).bind(event.id, event.name, event.event_type_id, event.event_type, event.description, event.location, event.date).run()
+  `).bind(event.id, event.name, event.event_type_id, event.event_type, event.description, event.location, event.date, event.image_url).run()
 }
 
-export function isEventDispatched(db: D1Database, eventId: number, windowLabel: '24h' | '1h') {
+export type EventWindowLabel = '24h' | '1h' | '10m'
+
+export function isEventDispatched(db: D1Database, eventId: number, windowLabel: EventWindowLabel) {
   return db.prepare('SELECT 1 FROM event_dispatch_log WHERE event_id = ? AND window_label = ?')
     .bind(eventId, windowLabel).first().then(r => r !== null)
 }
 
-export function markEventNotificationSent(db: D1Database, eventId: number, windowLabel: '24h' | '1h') {
+export function markEventNotificationSent(db: D1Database, eventId: number, windowLabel: EventWindowLabel) {
   return db.prepare('INSERT OR IGNORE INTO event_dispatch_log (event_id, window_label) VALUES (?, ?)')
     .bind(eventId, windowLabel).run()
 }
@@ -908,32 +923,35 @@ export function pruneOldEventDispatchLog(db: D1Database) {
   return db.prepare('DELETE FROM event_dispatch_log WHERE dispatched_at < unixepoch() - 172800').run()
 }
 
-/** Returns distinct users subscribed to events feeds that cover the given event type.
+/** Returns distinct users subscribed to events feeds that cover the given event type
+ *  AND have the given reminder window enabled in their notification preferences.
  *  A feed with no event_type entries covers all event types. */
-export function getUsersForEventType(db: D1Database, eventTypeId: number | null): Promise<{ results: { user_id: string; device_token: string }[] }> {
-  if (eventTypeId === null) {
-    // Event has no type — only notify users subscribed to "all event types"
-    return db.prepare(`
-      SELECT DISTINCT ud.user_id, ud.device_token
-      FROM feed_subscriptions fs
-      JOIN user_devices ud ON ud.user_id = fs.user_id
-      WHERE fs.section_type = 'events'
-        AND NOT EXISTS (
-          SELECT 1 FROM feed_subscription_event_types
-          WHERE user_id = fs.user_id AND feed_id = fs.feed_id
-        )
-    `).all<{ user_id: string; device_token: string }>()
-  }
+export function getUsersForEventType(
+  db: D1Database,
+  eventTypeId: number | null,
+  windowLabel: EventWindowLabel,
+): Promise<{ results: { user_id: string; device_token: string }[] }> {
+  const prefCol = windowLabel === '24h' ? 'event_remind_24h'
+                : windowLabel === '1h'  ? 'event_remind_1h'
+                :                         'event_remind_10m'
+
+  const typeFilter = eventTypeId === null
+    // Event has no type — only notify users whose feed covers all types (no type entries)
+    ? `AND NOT EXISTS (SELECT 1 FROM feed_subscription_event_types WHERE user_id = fs.user_id AND feed_id = fs.feed_id)`
+    : `AND (
+        NOT EXISTS (SELECT 1 FROM feed_subscription_event_types WHERE user_id = fs.user_id AND feed_id = fs.feed_id)
+        OR EXISTS (SELECT 1 FROM feed_subscription_event_types WHERE user_id = fs.user_id AND feed_id = fs.feed_id AND event_type_id = ${eventTypeId})
+      )`
+
   return db.prepare(`
     SELECT DISTINCT ud.user_id, ud.device_token
     FROM feed_subscriptions fs
     JOIN user_devices ud ON ud.user_id = fs.user_id
+    LEFT JOIN user_preferences up ON up.user_id = fs.user_id
     WHERE fs.section_type = 'events'
-      AND (
-        NOT EXISTS (SELECT 1 FROM feed_subscription_event_types WHERE user_id = fs.user_id AND feed_id = fs.feed_id)
-        OR EXISTS (SELECT 1 FROM feed_subscription_event_types WHERE user_id = fs.user_id AND feed_id = fs.feed_id AND event_type_id = ?)
-      )
-  `).bind(eventTypeId).all<{ user_id: string; device_token: string }>()
+      ${typeFilter}
+      AND (up.${prefCol} IS NULL OR up.${prefCol} = 1)
+  `).all<{ user_id: string; device_token: string }>()
 }
 
 // --- Astronaut notification queries ---

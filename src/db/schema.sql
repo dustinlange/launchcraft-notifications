@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   notify_terminal_status   INTEGER NOT NULL DEFAULT 1,  -- success / failure / partial failure (default on)
   auto_live_activity       INTEGER NOT NULL DEFAULT 1,  -- automatically start Live Activity (default on)
   live_activity_window     INTEGER NOT NULL DEFAULT 3600, -- seconds before T-0 to start (14400=4h, 3600=1h, 1800=30m)
+  event_remind_24h         INTEGER NOT NULL DEFAULT 1,  -- event reminder 24h before (default on)
+  event_remind_1h          INTEGER NOT NULL DEFAULT 1,  -- event reminder 1h before (default on)
+  event_remind_10m         INTEGER NOT NULL DEFAULT 1,  -- event reminder 10m before (default on)
   updated_at               INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -164,6 +167,7 @@ CREATE TABLE IF NOT EXISTS events (
   description   TEXT,
   location      TEXT,
   date          INTEGER,              -- unix timestamp of the event
+  image_url     TEXT,                 -- LL2 feature_image URL; attached by Notification Service Extension
   last_updated  INTEGER NOT NULL DEFAULT (unixepoch())
 );
 

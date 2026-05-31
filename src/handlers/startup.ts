@@ -35,6 +35,9 @@ export async function handleStartup(c: Context<{ Bindings: Env }>) {
       notifyTerminalStatus: prefs ? prefs.notify_terminal_status !== 0 : true,
       autoLiveActivity:     prefs ? prefs.auto_live_activity     !== 0 : true,
       liveActivityWindow:   prefs ? prefs.live_activity_window           : 3600,
+      eventRemind24h:       prefs ? prefs.event_remind_24h       !== 0 : true,
+      eventRemind1h:        prefs ? prefs.event_remind_1h        !== 0 : true,
+      eventRemind10m:       prefs ? prefs.event_remind_10m       !== 0 : true,
     },
     providerIds: providerResult.results.map(r => r.provider_id),
     locations: locationResult.results.map(r => ({

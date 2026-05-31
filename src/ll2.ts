@@ -47,7 +47,8 @@ export interface LL2Event {
   type: { id: number; name: string } | null
   description: string | null
   location: string | null
-  date: string | null   // ISO8601 datetime
+  date: string | null       // ISO8601 datetime
+  feature_image: string | null  // full-size image URL from LL2
 }
 
 export interface LL2Astronaut {

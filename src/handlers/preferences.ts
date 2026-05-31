@@ -17,6 +17,9 @@ export async function handleGetPreferences(c: Context<{ Bindings: Env }>) {
     notifyTerminalStatus:  prefs ? prefs.notify_terminal_status !== 0 : true,
     autoLiveActivity:      prefs ? prefs.auto_live_activity     !== 0 : true,
     liveActivityWindow:    prefs ? prefs.live_activity_window           : 3600,
+    eventRemind24h:        prefs ? prefs.event_remind_24h       !== 0 : true,
+    eventRemind1h:         prefs ? prefs.event_remind_1h        !== 0 : true,
+    eventRemind10m:        prefs ? prefs.event_remind_10m       !== 0 : true,
   })
 }
 
@@ -32,11 +35,15 @@ export async function handleSavePreferences(c: Context<{ Bindings: Env }>) {
     notifyTerminalStatus: boolean
     autoLiveActivity: boolean
     liveActivityWindow: number
+    eventRemind24h: boolean
+    eventRemind1h: boolean
+    eventRemind10m: boolean
   }>()
 
   const { userId, remind24h, remind1h, remind10m,
           notifyNetChange, notifyStatusChange, notifyTerminalStatus,
-          autoLiveActivity, liveActivityWindow } = body
+          autoLiveActivity, liveActivityWindow,
+          eventRemind24h, eventRemind1h, eventRemind10m } = body
   if (!userId) return c.json({ error: 'missing userId' }, 400)
 
   await upsertUserPreferences(
@@ -44,6 +51,7 @@ export async function handleSavePreferences(c: Context<{ Bindings: Env }>) {
     remind24h ?? true, remind1h ?? true, remind10m ?? true,
     notifyNetChange ?? false, notifyStatusChange ?? false, notifyTerminalStatus ?? true,
     autoLiveActivity ?? true, liveActivityWindow ?? 3600,
+    eventRemind24h ?? true, eventRemind1h ?? true, eventRemind10m ?? true,
   )
   return c.json({ ok: true })
 }

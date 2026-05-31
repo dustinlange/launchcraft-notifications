@@ -59,11 +59,12 @@ export interface AlertPayload {
   title: string
   body: string
   launchId: string
-  type: 'reminder' | 'status_change' | 'schedule_change' | 'news'
+  type: 'reminder' | 'status_change' | 'schedule_change' | 'news' | 'event_reminder' | 'astronaut_status'
   t0?: number        // unix timestamp; included for schedule_change so iOS can format locally
   launchName?: string
   articleUrl?: string  // included for news notifications so iOS can open the article on tap
-  imageUrl?: string    // included for news notifications so the Notification Service Extension can attach the image
+  imageUrl?: string    // image URL for the Notification Service Extension to attach
+  eventId?: number     // LL2 event ID; included for event_reminder so iOS can deep-link to the event
 }
 
 function base64url(buffer: ArrayBuffer | Uint8Array): string {
@@ -206,7 +207,7 @@ export async function pushAlertNotification(
       alert: { title: alert.title, body: alert.body },
       sound: 'default',
       // Required for Notification Service Extension to run (format body or attach image)
-      ...(alert.type === 'schedule_change' || alert.imageUrl !== undefined ? { 'mutable-content': 1 } : {}),
+      ...(alert.type === 'schedule_change' || alert.type === 'event_reminder' || alert.imageUrl !== undefined ? { 'mutable-content': 1 } : {}),
     },
     launchId: alert.launchId,
     notificationType: alert.type,
@@ -214,6 +215,7 @@ export async function pushAlertNotification(
     ...(alert.launchName !== undefined ? { launchName: alert.launchName } : {}),
     ...(alert.articleUrl !== undefined ? { articleUrl: alert.articleUrl } : {}),
     ...(alert.imageUrl !== undefined ? { imageUrl: alert.imageUrl } : {}),
+    ...(alert.eventId !== undefined ? { eventId: alert.eventId } : {}),
   }
 
   return sendApns(kv, config, deviceToken, 'alert', config.bundleId, payload)
