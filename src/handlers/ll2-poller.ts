@@ -187,7 +187,7 @@ async function syncLaunch(env: Env, ll2: {
       })
     } else if (t0Changed && t0 && wantsNetChange) {
       await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
-        title: 'Schedule Changed',
+        title: 'Launch Rescheduled',
         body: new Date(t0 * 1000).toUTCString(),
         launchId: ll2.id,
         type: 'schedule_change',
