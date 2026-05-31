@@ -834,13 +834,12 @@ export async function upsertNewsPreferences(db: D1Database, userId: string, enab
   return db.batch(stmts)
 }
 
-export async function isArticleDispatched(db: D1Database, articleId: number): Promise<boolean> {
-  const row = await db.prepare('SELECT 1 FROM news_dispatch_log WHERE article_id = ?').bind(articleId).first()
-  return row !== null
-}
-
-export function markArticleDispatched(db: D1Database, articleId: number) {
-  return db.prepare('INSERT OR IGNORE INTO news_dispatch_log (article_id) VALUES (?)').bind(articleId).run()
+/** Atomically claims an article for dispatch.
+ *  Returns true if this caller won the claim (changes === 1) and should proceed to send.
+ *  Returns false if another Worker instance already claimed it (INSERT OR IGNORE no-ops). */
+export async function claimArticleForDispatch(db: D1Database, articleId: number): Promise<boolean> {
+  const result = await db.prepare('INSERT OR IGNORE INTO news_dispatch_log (article_id) VALUES (?)').bind(articleId).run()
+  return result.meta.changes === 1
 }
 
 export function pruneOldDispatchLog(db: D1Database) {

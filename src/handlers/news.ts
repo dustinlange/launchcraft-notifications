@@ -5,8 +5,7 @@ import {
   getUsersForNewsSource,
   getNewsPreferences,
   upsertNewsPreferences,
-  isArticleDispatched,
-  markArticleDispatched,
+  claimArticleForDispatch,
   pruneOldDispatchLog,
   clearDeviceToken,
 } from '../db/queries'
@@ -44,8 +43,10 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
   const apnsConfig = getApnsConfig(env)
 
   for (const article of articles) {
-    const alreadySent = await isArticleDispatched(env.DB, article.id)
-    if (alreadySent) continue
+    // Atomically claim this article — if another Worker instance beat us to it, skip.
+    // This prevents duplicate notifications when concurrent cron executions overlap.
+    const claimed = await claimArticleForDispatch(env.DB, article.id)
+    if (!claimed) continue
 
     let usersResult
     try {
@@ -56,10 +57,7 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
     }
 
     const users = usersResult.results
-    if (users.length === 0) {
-      await markArticleDispatched(env.DB, article.id)
-      continue
-    }
+    if (users.length === 0) continue
 
     await Promise.allSettled(
       users.map(async u => {
@@ -79,8 +77,6 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
         }
       })
     )
-
-    await markArticleDispatched(env.DB, article.id)
   }
 }
 
