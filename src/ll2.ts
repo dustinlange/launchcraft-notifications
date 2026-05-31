@@ -41,9 +41,29 @@ export function parseRelativeTime(rel: string): number {
   return neg ? -total : total
 }
 
+export interface LL2Event {
+  id: number
+  name: string
+  type: { id: number; name: string } | null
+  description: string | null
+  location: string | null
+  date: string | null   // ISO8601 datetime
+}
+
+export interface LL2Astronaut {
+  id: number
+  name: string
+  status: { id: number; name: string } | null
+  agency: { id: number; name: string } | null
+  flights_count: number | null
+  in_space: boolean
+}
+
 export interface LL2Client {
   getUpcomingLaunches(limit?: number): Promise<LL2Launch[]>
   getLaunch(id: string): Promise<LL2Launch | null>
+  getUpcomingEvents(limit?: number): Promise<LL2Event[]>
+  getAstronauts(limit?: number): Promise<LL2Astronaut[]>
 }
 
 export function createLL2Client(apiKey: string): LL2Client {
@@ -72,6 +92,26 @@ export function createLL2Client(apiKey: string): LL2Client {
       if (res.status === 404) return null
       if (!res.ok) throw new Error(`LL2 launch fetch failed: ${res.status}`)
       return res.json<LL2Launch>()
+    },
+
+    async getUpcomingEvents(limit = 100): Promise<LL2Event[]> {
+      const url = `${LL2_BASE}/events/upcoming/?limit=${limit}&ordering=date`
+      console.log(`LL2 GET ${url}`)
+      const res = await fetch(url, { headers })
+      console.log(`LL2 events response: ${res.status}`)
+      if (!res.ok) throw new Error(`LL2 events fetch failed: ${res.status}`)
+      const data = await res.json<{ results: LL2Event[] }>()
+      return data.results
+    },
+
+    async getAstronauts(limit = 200): Promise<LL2Astronaut[]> {
+      const url = `${LL2_BASE}/astronauts/?limit=${limit}&ordering=id`
+      console.log(`LL2 GET ${url}`)
+      const res = await fetch(url, { headers })
+      console.log(`LL2 astronauts response: ${res.status}`)
+      if (!res.ok) throw new Error(`LL2 astronauts fetch failed: ${res.status}`)
+      const data = await res.json<{ results: LL2Astronaut[] }>()
+      return data.results
     },
   }
 }

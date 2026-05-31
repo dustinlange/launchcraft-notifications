@@ -1,11 +1,11 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertSectionSubscription, deleteSectionSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForSectionSubscription } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertLaunchesFeedSubscription, upsertEventsFeedSubscription, upsertNewsFeedSubscription, upsertAstronautsFeedSubscription, deleteFeedSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForFeedSubscription, getUserPreferences } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
 
-const START_WINDOW_S = 60 * 60  // send push-to-start if T-0 is within 1 hour
+const DEFAULT_START_WINDOW_S = 60 * 60  // fallback: send push-to-start if T-0 is within 1 hour
 
 // POST /register
 // Called when user subscribes to a launch in the app
@@ -96,13 +96,16 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
   // Immediately sync from LL2 so the DB has fresh data without waiting for the next poll
   c.executionCtx.waitUntil(syncLaunchById(c.env, launch.id))
 
-  // Send push-to-start immediately if T-0 is within 1 hour
+  // Send push-to-start immediately if T-0 is within the user's live_activity_window.
+  // Fetch the preference asynchronously so we don't block the response on a DB read.
   if (pushToStartToken && attributesJson && launch.t0) {
     const now = Math.floor(Date.now() / 1000)
-    if (launch.t0 - now <= START_WINDOW_S) {
-      c.executionCtx.waitUntil(
-        sendPushToStart(c.env, launch.id, userId, pushToStartToken, attributesJson, {
-          netDate: launch.t0,
+    c.executionCtx.waitUntil((async () => {
+      const prefs = await getUserPreferences(c.env.DB, userId)
+      const startWindowS = prefs?.live_activity_window ?? DEFAULT_START_WINDOW_S
+      if (launch.t0! - now <= startWindowS) {
+        await sendPushToStart(c.env, launch.id, userId, pushToStartToken, attributesJson!, {
+          netDate: launch.t0!,
           windowStart: null,
           windowEnd: null,
           currentEventName: null,
@@ -111,8 +114,8 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
           nextEventDate: null,
           statusId: launch.ll2StatusId,
         }, launch.name)
-      )
-    }
+      }
+    })())
   }
 
   return c.json({ ok: true })
@@ -279,52 +282,72 @@ export async function handleUnsubscribeFromLocation(c: Context<{ Bindings: Env }
   return c.json({ ok: true })
 }
 
-// GET /section-subscription?userId=<id>&sectionId=<id>
-// Returns whether the given section has an active subscription.
-export async function handleGetSectionSubscription(c: Context<{ Bindings: Env }>) {
+// GET /feed-subscription?userId=<id>&feedId=<id>
+// Returns whether the given feed has an active subscription.
+export async function handleGetFeedSubscription(c: Context<{ Bindings: Env }>) {
   const userId = c.req.query('userId')
-  const sectionId = c.req.query('sectionId')
-  if (!userId || !sectionId) return c.json({ error: 'missing userId or sectionId' }, 400)
+  const feedId = c.req.query('feedId')
+  if (!userId || !feedId) return c.json({ error: 'missing userId or feedId' }, 400)
 
   const row = await c.env.DB.prepare(
-    'SELECT 1 FROM section_subscriptions WHERE user_id = ? AND section_id = ?'
-  ).bind(userId, sectionId).first()
+    'SELECT 1 FROM feed_subscriptions WHERE user_id = ? AND feed_id = ?'
+  ).bind(userId, feedId).first()
 
   return c.json({ subscribed: row !== null })
 }
 
-// POST /section-subscription
-// Creates or replaces a section subscription. sectionId is the stable UUID of the ForYouSection.
-// Pass allUpcoming=true (or empty provider/location arrays) for "all upcoming" sections.
-export async function handleSubscribeToSection(c: Context<{ Bindings: Env }>) {
+// POST /feed-subscription
+// Creates or replaces a feed subscription keyed on the stable UUID of the ForYouSection.
+// sectionType determines which sub-table data is written.
+export async function handleSubscribeToFeed(c: Context<{ Bindings: Env }>) {
   const body = await c.req.json<{
     userId: string
-    sectionId: string
-    providerIds: number[]
-    locationIds: number[]
+    feedId: string
+    sectionType: 'launches' | 'events' | 'news' | 'astronauts'
+    // launches
+    providerIds?: number[]
+    locationIds?: number[]
+    // events
+    eventTypeIds?: number[]
+    // news
+    sources?: string[]
+    // astronauts
+    agencyIds?: number[]
+    inSpaceOnly?: boolean
   }>()
-  const { userId, sectionId, providerIds, locationIds } = body
-  if (!userId || !sectionId) return c.json({ error: 'missing userId or sectionId' }, 400)
-  if (!Array.isArray(providerIds) || !Array.isArray(locationIds)) {
-    return c.json({ error: 'providerIds and locationIds must be arrays' }, 400)
+  const { userId, feedId, sectionType } = body
+  if (!userId || !feedId || !sectionType) return c.json({ error: 'missing userId, feedId, or sectionType' }, 400)
+
+  if (sectionType === 'launches') {
+    const providerIds = Array.isArray(body.providerIds) ? body.providerIds : []
+    const locationIds = Array.isArray(body.locationIds) ? body.locationIds : []
+    const allUpcoming = providerIds.length === 0 && locationIds.length === 0
+    await upsertLaunchesFeedSubscription(c.env.DB, userId, feedId, allUpcoming, providerIds, locationIds)
+    await clearOptOutsForFeedSubscription(c.env.DB, userId, allUpcoming, providerIds, locationIds)
+  } else if (sectionType === 'events') {
+    const eventTypeIds = Array.isArray(body.eventTypeIds) ? body.eventTypeIds : []
+    await upsertEventsFeedSubscription(c.env.DB, userId, feedId, eventTypeIds)
+  } else if (sectionType === 'news') {
+    const sources = Array.isArray(body.sources) ? body.sources : []
+    await upsertNewsFeedSubscription(c.env.DB, userId, feedId, sources)
+  } else if (sectionType === 'astronauts') {
+    const agencyIds = Array.isArray(body.agencyIds) ? body.agencyIds : []
+    await upsertAstronautsFeedSubscription(c.env.DB, userId, feedId, agencyIds, body.inSpaceOnly ?? false)
+  } else {
+    return c.json({ error: 'invalid sectionType' }, 400)
   }
 
-  const allUpcoming = providerIds.length === 0 && locationIds.length === 0
-  await upsertSectionSubscription(c.env.DB, userId, sectionId, allUpcoming, providerIds, locationIds)
-  // Re-subscribing to a section should clear opt-outs for launches now covered by it,
-  // so fan-out will include them again on the next poll.
-  await clearOptOutsForSectionSubscription(c.env.DB, userId, allUpcoming, providerIds, locationIds)
   return c.json({ ok: true })
 }
 
-// DELETE /section-subscription
-// Removes a section subscription entirely. Only needs the sectionId.
-export async function handleUnsubscribeFromSection(c: Context<{ Bindings: Env }>) {
-  const body = await c.req.json<{ userId: string; sectionId: string }>()
-  const { userId, sectionId } = body
-  if (!userId || !sectionId) return c.json({ error: 'missing userId or sectionId' }, 400)
+// DELETE /feed-subscription
+// Removes a feed subscription entirely.
+export async function handleUnsubscribeFromFeed(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ userId: string; feedId: string }>()
+  const { userId, feedId } = body
+  if (!userId || !feedId) return c.json({ error: 'missing userId or feedId' }, 400)
 
-  await deleteSectionSubscription(c.env.DB, userId, sectionId)
+  await deleteFeedSubscription(c.env.DB, userId, feedId)
   return c.json({ ok: true })
 }
 

@@ -204,11 +204,12 @@ export function fanOutProviderSubscriptions(db: D1Database, launchId: string, pr
     LEFT JOIN launch_opt_outs lo ON lo.user_id = ps.user_id AND lo.launch_id = ?
     WHERE ps.provider_id = ? AND lo.launch_id IS NULL
     UNION
-    SELECT ?, ssp.user_id
-    FROM section_subscription_providers ssp
-    JOIN user_devices ud ON ud.user_id = ssp.user_id
-    LEFT JOIN launch_opt_outs lo ON lo.user_id = ssp.user_id AND lo.launch_id = ?
-    WHERE ssp.provider_id = ? AND lo.launch_id IS NULL
+    SELECT ?, fsp.user_id
+    FROM feed_subscription_providers fsp
+    JOIN user_devices ud ON ud.user_id = fsp.user_id
+    JOIN feed_subscriptions fs ON fs.user_id = fsp.user_id AND fs.feed_id = fsp.feed_id AND fs.section_type = 'launches'
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = fsp.user_id AND lo.launch_id = ?
+    WHERE fsp.provider_id = ? AND lo.launch_id IS NULL
   `).bind(launchId, launchId, providerId, launchId, launchId, providerId).run()
 }
 
@@ -223,49 +224,118 @@ export function upsertProviderSubscription(db: D1Database, userId: string, provi
   `).bind(userId, providerId).run()
 }
 
-/// Inserts or replaces a full section subscription record.
-/// Pass allUpcoming=true and empty arrays for "all upcoming" sections.
-export function upsertSectionSubscription(
+/// Inserts or replaces a launches feed subscription record.
+/// Pass allUpcoming=true and empty arrays for "all upcoming" feeds.
+export function upsertLaunchesFeedSubscription(
   db: D1Database,
   userId: string,
-  sectionId: string,
+  feedId: string,
   allUpcoming: boolean,
   providerIds: number[],
   locationIds: number[]
 ) {
   const stmts = [
     db.prepare(`
-      INSERT INTO section_subscriptions (user_id, section_id, all_upcoming)
-      VALUES (?, ?, ?)
-      ON CONFLICT(user_id, section_id) DO UPDATE SET all_upcoming = excluded.all_upcoming
-    `).bind(userId, sectionId, allUpcoming ? 1 : 0),
-    // Clear old entries so re-subscribing with a different filter is always clean
-    db.prepare('DELETE FROM section_subscription_providers WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
-    db.prepare('DELETE FROM section_subscription_locations WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
+      INSERT INTO feed_subscriptions (user_id, feed_id, section_type, all_upcoming)
+      VALUES (?, ?, 'launches', ?)
+      ON CONFLICT(user_id, feed_id) DO UPDATE SET
+        section_type = 'launches',
+        all_upcoming = excluded.all_upcoming
+    `).bind(userId, feedId, allUpcoming ? 1 : 0),
+    // Clear old filter entries so re-subscribing with a different filter is always clean
+    db.prepare('DELETE FROM feed_subscription_providers WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_locations WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
     ...providerIds.map(id =>
-      db.prepare('INSERT OR IGNORE INTO section_subscription_providers (user_id, section_id, provider_id) VALUES (?, ?, ?)')
-        .bind(userId, sectionId, id)
+      db.prepare('INSERT OR IGNORE INTO feed_subscription_providers (user_id, feed_id, provider_id) VALUES (?, ?, ?)')
+        .bind(userId, feedId, id)
     ),
     ...locationIds.map(id =>
-      db.prepare('INSERT OR IGNORE INTO section_subscription_locations (user_id, section_id, location_id) VALUES (?, ?, ?)')
-        .bind(userId, sectionId, id)
+      db.prepare('INSERT OR IGNORE INTO feed_subscription_locations (user_id, feed_id, location_id) VALUES (?, ?, ?)')
+        .bind(userId, feedId, id)
     ),
   ]
   return db.batch(stmts)
 }
 
-/// Removes a section subscription and all individual launch subscriptions that were
-/// fanned out from it — unless the launch is still covered by another source
-/// (a different section, a direct provider subscription, or a direct location subscription).
+/// Inserts or replaces an events feed subscription record.
+export function upsertEventsFeedSubscription(
+  db: D1Database,
+  userId: string,
+  feedId: string,
+  eventTypeIds: number[]
+) {
+  const stmts = [
+    db.prepare(`
+      INSERT INTO feed_subscriptions (user_id, feed_id, section_type)
+      VALUES (?, ?, 'events')
+      ON CONFLICT(user_id, feed_id) DO UPDATE SET section_type = 'events'
+    `).bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_event_types WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    ...eventTypeIds.map(id =>
+      db.prepare('INSERT OR IGNORE INTO feed_subscription_event_types (user_id, feed_id, event_type_id) VALUES (?, ?, ?)')
+        .bind(userId, feedId, id)
+    ),
+  ]
+  return db.batch(stmts)
+}
+
+/// Inserts or replaces a news feed subscription record.
+export function upsertNewsFeedSubscription(
+  db: D1Database,
+  userId: string,
+  feedId: string,
+  sources: string[]   // empty = all sources
+) {
+  const stmts = [
+    db.prepare(`
+      INSERT INTO feed_subscriptions (user_id, feed_id, section_type)
+      VALUES (?, ?, 'news')
+      ON CONFLICT(user_id, feed_id) DO UPDATE SET section_type = 'news'
+    `).bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_news_sources WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    ...sources.map(s =>
+      db.prepare('INSERT OR IGNORE INTO feed_subscription_news_sources (user_id, feed_id, source) VALUES (?, ?, ?)')
+        .bind(userId, feedId, s)
+    ),
+  ]
+  return db.batch(stmts)
+}
+
+/// Inserts or replaces an astronauts feed subscription record.
+export function upsertAstronautsFeedSubscription(
+  db: D1Database,
+  userId: string,
+  feedId: string,
+  agencyIds: number[],  // empty = all agencies
+  inSpaceOnly: boolean
+) {
+  const stmts = [
+    db.prepare(`
+      INSERT INTO feed_subscriptions (user_id, feed_id, section_type, in_space_only)
+      VALUES (?, ?, 'astronauts', ?)
+      ON CONFLICT(user_id, feed_id) DO UPDATE SET
+        section_type = 'astronauts',
+        in_space_only = excluded.in_space_only
+    `).bind(userId, feedId, inSpaceOnly ? 1 : 0),
+    db.prepare('DELETE FROM feed_subscription_astronaut_agencies WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    ...agencyIds.map(id =>
+      db.prepare('INSERT OR IGNORE INTO feed_subscription_astronaut_agencies (user_id, feed_id, agency_id) VALUES (?, ?, ?)')
+        .bind(userId, feedId, id)
+    ),
+  ]
+  return db.batch(stmts)
+}
+
+/// Removes a feed subscription and, for launches feeds, all individual launch subscriptions
+/// that were fanned out from it — unless the launch is still covered by another source.
 ///
-/// IMPORTANT: the launch subscription DELETE must run first, before the section tables
-/// are cleared, so it can still query what this section covered.
-export function deleteSectionSubscription(db: D1Database, userId: string, sectionId: string) {
+/// IMPORTANT: the launch subscription DELETE must run first, before the feed tables
+/// are cleared, so it can still query what this feed covered.
+export function deleteFeedSubscription(db: D1Database, userId: string, feedId: string) {
   return db.batch([
-    // Step 1: remove individual launch subscriptions that belonged solely to this section.
-    // A launch is "covered by this section" if the section's providers, locations, or
-    // all_upcoming flag match the launch. We keep the subscription if any other source
-    // still covers it: another section, a direct provider sub, or a direct location sub.
+    // Step 1: remove individual launch subscriptions that belonged solely to this launches feed.
+    // Non-launches feeds (events/news/astronauts) don't fan-out to the subscriptions table,
+    // so the DELETE is scoped only to this feed's provider/location/all-upcoming coverage.
     db.prepare(`
       DELETE FROM subscriptions
       WHERE user_id = ?
@@ -274,39 +344,39 @@ export function deleteSectionSubscription(db: D1Database, userId: string, sectio
           FROM launches l
           INNER JOIN subscriptions s ON s.launch_id = l.id AND s.user_id = ?
           WHERE (
-            -- This section covers the launch via a provider filter
+            -- This feed covers the launch via a provider filter
             l.provider_id IN (
-              SELECT provider_id FROM section_subscription_providers
-              WHERE user_id = ? AND section_id = ?
+              SELECT provider_id FROM feed_subscription_providers
+              WHERE user_id = ? AND feed_id = ?
             )
             -- Or via a location filter
             OR l.pad_location_id IN (
-              SELECT location_id FROM section_subscription_locations
-              WHERE user_id = ? AND section_id = ?
+              SELECT location_id FROM feed_subscription_locations
+              WHERE user_id = ? AND feed_id = ?
             )
             -- Or via the all-upcoming flag
             OR EXISTS (
-              SELECT 1 FROM section_subscriptions
-              WHERE user_id = ? AND section_id = ? AND all_upcoming = 1
+              SELECT 1 FROM feed_subscriptions
+              WHERE user_id = ? AND feed_id = ? AND all_upcoming = 1
             )
           )
           -- Exclude launches still covered by another source
           AND l.id NOT IN (
             SELECT l2.id FROM launches l2 WHERE
-              -- Another section's provider filter still covers it
+              -- Another feed's provider filter still covers it
               l2.provider_id IN (
-                SELECT ssp.provider_id FROM section_subscription_providers ssp
-                WHERE ssp.user_id = ? AND ssp.section_id != ?
+                SELECT fsp.provider_id FROM feed_subscription_providers fsp
+                WHERE fsp.user_id = ? AND fsp.feed_id != ?
               )
-              -- Another section's location filter still covers it
+              -- Another feed's location filter still covers it
               OR l2.pad_location_id IN (
-                SELECT ssl.location_id FROM section_subscription_locations ssl
-                WHERE ssl.user_id = ? AND ssl.section_id != ?
+                SELECT fsl.location_id FROM feed_subscription_locations fsl
+                WHERE fsl.user_id = ? AND fsl.feed_id != ?
               )
-              -- Another all-upcoming section still covers it
+              -- Another all-upcoming feed still covers it
               OR EXISTS (
-                SELECT 1 FROM section_subscriptions ss
-                WHERE ss.user_id = ? AND ss.section_id != ? AND ss.all_upcoming = 1
+                SELECT 1 FROM feed_subscriptions fs
+                WHERE fs.user_id = ? AND fs.feed_id != ? AND fs.all_upcoming = 1
               )
               -- Direct provider subscription covers it
               OR l2.provider_id IN (
@@ -323,21 +393,24 @@ export function deleteSectionSubscription(db: D1Database, userId: string, sectio
     `).bind(
       userId,
       userId,
-      userId, sectionId,
-      userId, sectionId,
-      userId, sectionId,
-      userId, sectionId,
-      userId, sectionId,
-      userId, sectionId,
-      userId, sectionId,
+      userId, feedId,
+      userId, feedId,
+      userId, feedId,
+      userId, feedId,
+      userId, feedId,
+      userId, feedId,
+      userId, feedId,
       userId,
       userId,
     ),
 
-    // Step 2: remove the section subscription tables (order matters — after the DELETE above).
-    db.prepare('DELETE FROM section_subscriptions WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
-    db.prepare('DELETE FROM section_subscription_providers WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
-    db.prepare('DELETE FROM section_subscription_locations WHERE user_id = ? AND section_id = ?').bind(userId, sectionId),
+    // Step 2: remove the feed subscription rows (order matters — after the DELETE above).
+    db.prepare('DELETE FROM feed_subscriptions WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_providers WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_locations WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_event_types WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_news_sources WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
+    db.prepare('DELETE FROM feed_subscription_astronaut_agencies WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
   ])
 }
 
@@ -374,11 +447,12 @@ export function fanOutLocationSubscriptions(db: D1Database, launchId: string, pa
     LEFT JOIN launch_opt_outs lo ON lo.user_id = ls.user_id AND lo.launch_id = ?
     WHERE ls.location_id = ? AND lo.launch_id IS NULL
     UNION
-    SELECT ?, ssl.user_id
-    FROM section_subscription_locations ssl
-    JOIN user_devices ud ON ud.user_id = ssl.user_id
-    LEFT JOIN launch_opt_outs lo ON lo.user_id = ssl.user_id AND lo.launch_id = ?
-    WHERE ssl.location_id = ? AND lo.launch_id IS NULL
+    SELECT ?, fsl.user_id
+    FROM feed_subscription_locations fsl
+    JOIN user_devices ud ON ud.user_id = fsl.user_id
+    JOIN feed_subscriptions fs ON fs.user_id = fsl.user_id AND fs.feed_id = fsl.feed_id AND fs.section_type = 'launches'
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = fsl.user_id AND lo.launch_id = ?
+    WHERE fsl.location_id = ? AND lo.launch_id IS NULL
   `).bind(launchId, launchId, padLocationId, launchId, launchId, padLocationId).run()
 }
 
@@ -596,11 +670,11 @@ export function upsertUserPreferences(
 export function fanOutAllUpcomingSubscriptions(db: D1Database, launchId: string) {
   return db.prepare(`
     INSERT OR IGNORE INTO subscriptions (launch_id, user_id)
-    SELECT ?, ss.user_id
-    FROM section_subscriptions ss
-    JOIN user_devices ud ON ud.user_id = ss.user_id
-    LEFT JOIN launch_opt_outs lo ON lo.user_id = ss.user_id AND lo.launch_id = ?
-    WHERE ss.all_upcoming = 1 AND lo.launch_id IS NULL
+    SELECT ?, fs.user_id
+    FROM feed_subscriptions fs
+    JOIN user_devices ud ON ud.user_id = fs.user_id
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = fs.user_id AND lo.launch_id = ?
+    WHERE fs.all_upcoming = 1 AND fs.section_type = 'launches' AND lo.launch_id IS NULL
   `).bind(launchId, launchId).run()
 }
 
@@ -616,14 +690,14 @@ export function deleteLaunchOptOut(db: D1Database, userId: string, launchId: str
 }
 
 /**
- * Clears opt-outs for launches now covered by the given section subscription config.
- * Called when a user adds or updates a section subscription so that previously opted-out
- * launches that fall under the new config are re-included in fan-out.
+ * Clears opt-outs for launches now covered by the given feed subscription config.
+ * Called when a user adds or updates a launches feed subscription so that previously
+ * opted-out launches that fall under the new config are re-included in fan-out.
  *
- * allUpcoming=true  → clear all opt-outs for this user (section covers everything)
+ * allUpcoming=true  → clear all opt-outs for this user (feed covers everything)
  * providerIds/locationIds → clear opt-outs only for launches matching those filters
  */
-export function clearOptOutsForSectionSubscription(
+export function clearOptOutsForFeedSubscription(
   db: D1Database,
   userId: string,
   allUpcoming: boolean,
@@ -707,15 +781,17 @@ export function upsertTimelineEvents(db: D1Database, launchId: string, events: A
 // Also clears sent_at / transition_sent for any event that is now in the future again.
 // --- News notification queries ---
 
+/** Returns distinct users who have a news feed subscription covering the given source.
+ *  A subscription with no source entries covers all sources. */
 export function getUsersForNewsSource(db: D1Database, source: string): Promise<{ results: { user_id: string; device_token: string }[] }> {
   return db.prepare(`
-    SELECT ud.user_id, ud.device_token
-    FROM user_devices ud
-    LEFT JOIN user_news_preferences unp ON unp.user_id = ud.user_id
-    WHERE (unp.enabled IS NULL OR unp.enabled = 1)
+    SELECT DISTINCT ud.user_id, ud.device_token
+    FROM feed_subscriptions fs
+    JOIN user_devices ud ON ud.user_id = fs.user_id
+    WHERE fs.section_type = 'news'
       AND (
-        NOT EXISTS (SELECT 1 FROM user_news_sources WHERE user_id = ud.user_id)
-        OR EXISTS (SELECT 1 FROM user_news_sources WHERE user_id = ud.user_id AND source = ?)
+        NOT EXISTS (SELECT 1 FROM feed_subscription_news_sources WHERE user_id = fs.user_id AND feed_id = fs.feed_id)
+        OR EXISTS (SELECT 1 FROM feed_subscription_news_sources WHERE user_id = fs.user_id AND feed_id = fs.feed_id AND source = ?)
       )
   `).bind(source).all<{ user_id: string; device_token: string }>()
 }
@@ -789,4 +865,128 @@ export function clearPushToStartToken(db: D1Database, userId: string, pushToStar
   return db.prepare(
     'UPDATE user_devices SET push_to_start_token = NULL WHERE user_id = ? AND push_to_start_token = ?'
   ).bind(userId, pushToStartToken).run()
+}
+
+// --- Events notification queries ---
+
+export interface LL2Event {
+  id: number
+  name: string
+  event_type_id: number | null
+  event_type: string | null
+  description: string | null
+  location: string | null
+  date: number | null
+}
+
+export function upsertEvent(db: D1Database, event: LL2Event) {
+  return db.prepare(`
+    INSERT INTO events (id, name, event_type_id, event_type, description, location, date, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      event_type_id = excluded.event_type_id,
+      event_type = excluded.event_type,
+      description = COALESCE(excluded.description, description),
+      location = COALESCE(excluded.location, location),
+      date = excluded.date,
+      last_updated = unixepoch()
+  `).bind(event.id, event.name, event.event_type_id, event.event_type, event.description, event.location, event.date).run()
+}
+
+export function isEventDispatched(db: D1Database, eventId: number, windowLabel: '24h' | '1h') {
+  return db.prepare('SELECT 1 FROM event_dispatch_log WHERE event_id = ? AND window_label = ?')
+    .bind(eventId, windowLabel).first().then(r => r !== null)
+}
+
+export function markEventNotificationSent(db: D1Database, eventId: number, windowLabel: '24h' | '1h') {
+  return db.prepare('INSERT OR IGNORE INTO event_dispatch_log (event_id, window_label) VALUES (?, ?)')
+    .bind(eventId, windowLabel).run()
+}
+
+export function pruneOldEventDispatchLog(db: D1Database) {
+  return db.prepare('DELETE FROM event_dispatch_log WHERE dispatched_at < unixepoch() - 172800').run()
+}
+
+/** Returns distinct users subscribed to events feeds that cover the given event type.
+ *  A feed with no event_type entries covers all event types. */
+export function getUsersForEventType(db: D1Database, eventTypeId: number | null): Promise<{ results: { user_id: string; device_token: string }[] }> {
+  if (eventTypeId === null) {
+    // Event has no type — only notify users subscribed to "all event types"
+    return db.prepare(`
+      SELECT DISTINCT ud.user_id, ud.device_token
+      FROM feed_subscriptions fs
+      JOIN user_devices ud ON ud.user_id = fs.user_id
+      WHERE fs.section_type = 'events'
+        AND NOT EXISTS (
+          SELECT 1 FROM feed_subscription_event_types
+          WHERE user_id = fs.user_id AND feed_id = fs.feed_id
+        )
+    `).all<{ user_id: string; device_token: string }>()
+  }
+  return db.prepare(`
+    SELECT DISTINCT ud.user_id, ud.device_token
+    FROM feed_subscriptions fs
+    JOIN user_devices ud ON ud.user_id = fs.user_id
+    WHERE fs.section_type = 'events'
+      AND (
+        NOT EXISTS (SELECT 1 FROM feed_subscription_event_types WHERE user_id = fs.user_id AND feed_id = fs.feed_id)
+        OR EXISTS (SELECT 1 FROM feed_subscription_event_types WHERE user_id = fs.user_id AND feed_id = fs.feed_id AND event_type_id = ?)
+      )
+  `).bind(eventTypeId).all<{ user_id: string; device_token: string }>()
+}
+
+// --- Astronaut notification queries ---
+
+export interface AstronautSnapshot {
+  astronaut_id: number
+  name: string
+  in_space: number
+  agency_id: number | null
+  flights_count: number | null
+  last_checked: number
+}
+
+export function getAllAstronautSnapshots(db: D1Database) {
+  return db.prepare('SELECT * FROM astronaut_status_snapshots').all<AstronautSnapshot>()
+}
+
+export function upsertAstronautSnapshot(db: D1Database, snap: Omit<AstronautSnapshot, 'last_checked'>) {
+  return db.prepare(`
+    INSERT INTO astronaut_status_snapshots (astronaut_id, name, in_space, agency_id, flights_count, last_checked)
+    VALUES (?, ?, ?, ?, ?, unixepoch())
+    ON CONFLICT(astronaut_id) DO UPDATE SET
+      name = excluded.name,
+      in_space = excluded.in_space,
+      agency_id = excluded.agency_id,
+      flights_count = excluded.flights_count,
+      last_checked = unixepoch()
+  `).bind(snap.astronaut_id, snap.name, snap.in_space, snap.agency_id, snap.flights_count).run()
+}
+
+/** Returns distinct users with an astronauts feed covering the given agency_id.
+ *  A feed with no agency entries covers all agencies. */
+export function getUsersForAstronautAgency(db: D1Database, agencyId: number | null): Promise<{ results: { user_id: string; device_token: string }[] }> {
+  if (agencyId === null) {
+    return db.prepare(`
+      SELECT DISTINCT ud.user_id, ud.device_token
+      FROM feed_subscriptions fs
+      JOIN user_devices ud ON ud.user_id = fs.user_id
+      WHERE fs.section_type = 'astronauts'
+        AND NOT EXISTS (
+          SELECT 1 FROM feed_subscription_astronaut_agencies
+          WHERE user_id = fs.user_id AND feed_id = fs.feed_id
+        )
+    `).all<{ user_id: string; device_token: string }>()
+  }
+  return db.prepare(`
+    SELECT DISTINCT ud.user_id, ud.device_token
+    FROM feed_subscriptions fs
+    JOIN user_devices ud ON ud.user_id = fs.user_id
+    WHERE fs.section_type = 'astronauts'
+      AND (
+        NOT EXISTS (SELECT 1 FROM feed_subscription_astronaut_agencies WHERE user_id = fs.user_id AND feed_id = fs.feed_id)
+        OR EXISTS (SELECT 1 FROM feed_subscription_astronaut_agencies WHERE user_id = fs.user_id AND feed_id = fs.feed_id AND agency_id = ?)
+      )
+  `).bind(agencyId).all<{ user_id: string; device_token: string }>()
 }

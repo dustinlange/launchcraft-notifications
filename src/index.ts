@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { handleRegister, handleActivityToken, handleClearActivityToken, handleDeviceToken, handlePushToStartToken, handleGetSubscriptions, handleUnsubscribe, handleGetProviderSubscriptions, handleSubscribeToProvider, handleUnsubscribeFromProvider, handleGetLocationSubscriptions, handleSubscribeToLocation, handleUnsubscribeFromLocation, handleGetSectionSubscription, handleSubscribeToSection, handleUnsubscribeFromSection } from './handlers/register'
+import { handleRegister, handleActivityToken, handleClearActivityToken, handleDeviceToken, handlePushToStartToken, handleGetSubscriptions, handleUnsubscribe, handleGetProviderSubscriptions, handleSubscribeToProvider, handleUnsubscribeFromProvider, handleGetLocationSubscriptions, handleSubscribeToLocation, handleUnsubscribeFromLocation, handleGetFeedSubscription, handleSubscribeToFeed, handleUnsubscribeFromFeed } from './handlers/register'
 import { handleWebhook } from './handlers/webhook'
 import { dispatchTimelineEvents } from './handlers/timeline'
 import { pollNoTimelineLaunches } from './handlers/poller'
@@ -9,7 +9,9 @@ import { dispatchReminders } from './handlers/reminders'
 import { handleGetPreferences, handleSavePreferences } from './handlers/preferences'
 import { handleStartup } from './handlers/startup'
 import { handleTestTrigger } from './handlers/test'
-import { dispatchNewsNotifications, handleGetNewsSources, handleGetNewsPreferences, handleSaveNewsPreferences } from './handlers/news'
+import { dispatchNewsNotifications, handleGetNewsSources } from './handlers/news'
+import { dispatchEventNotifications } from './handlers/events-notifications'
+import { pollAstronauts } from './handlers/astronauts-poller'
 import { handleLL2Proxy } from './handlers/ll2-proxy'
 import { handleSNAPIProxy } from './handlers/snapi-proxy'
 
@@ -66,13 +68,11 @@ app.get('/location-subscriptions', handleGetLocationSubscriptions)
 app.post('/location-subscription', handleSubscribeToLocation)
 app.delete('/location-subscription', handleUnsubscribeFromLocation)
 
-app.get('/section-subscription', handleGetSectionSubscription)
-app.post('/section-subscription', handleSubscribeToSection)
-app.delete('/section-subscription', handleUnsubscribeFromSection)
+app.get('/feed-subscription', handleGetFeedSubscription)
+app.post('/feed-subscription', handleSubscribeToFeed)
+app.delete('/feed-subscription', handleUnsubscribeFromFeed)
 
 app.get('/news-sources', handleGetNewsSources)
-app.get('/news-preferences', handleGetNewsPreferences)
-app.post('/news-preferences', handleSaveNewsPreferences)
 
 app.get('/startup', handleStartup)
 
@@ -111,6 +111,12 @@ export default {
       ctx.waitUntil(pollLL2(env))
       ctx.waitUntil(pollNoTimelineLaunches(env))
       ctx.waitUntil(dispatchNewsNotifications(env))
+      ctx.waitUntil(dispatchEventNotifications(env))
+    }
+
+    // Every 15 minutes — poll astronaut in-space status
+    if (now % 900 < 60) {
+      ctx.waitUntil(pollAstronauts(env))
     }
 
     // Dead man's switch — ping healthchecks.io so we get alerted if the cron stops firing

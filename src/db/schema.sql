@@ -88,28 +88,63 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   updated_at               INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
--- Section-level subscriptions (one row per subscribed For You section)
-CREATE TABLE IF NOT EXISTS section_subscriptions (
-  user_id      TEXT    NOT NULL,
-  section_id   TEXT    NOT NULL,   -- ForYouSection.id (UUID string)
-  all_upcoming INTEGER NOT NULL DEFAULT 0,  -- 1 = subscribe to every upcoming launch
-  PRIMARY KEY (user_id, section_id)
+-- Feed-level subscriptions (one row per subscribed For You feed).
+-- Previously named section_subscriptions.
+-- D1 migration:
+--   ALTER TABLE section_subscriptions RENAME TO feed_subscriptions;
+--   ALTER TABLE feed_subscriptions ADD COLUMN section_type TEXT NOT NULL DEFAULT 'launches';
+--   ALTER TABLE feed_subscriptions ADD COLUMN in_space_only INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS feed_subscriptions (
+  user_id       TEXT NOT NULL,
+  feed_id       TEXT NOT NULL,   -- ForYouSection.id (UUID string)
+  section_type  TEXT NOT NULL DEFAULT 'launches',  -- 'launches'|'events'|'news'|'astronauts'
+  all_upcoming  INTEGER NOT NULL DEFAULT 0,   -- launches: 1 = subscribe to every upcoming launch
+  in_space_only INTEGER NOT NULL DEFAULT 0,   -- astronauts: 1 = only notify for in-space astronauts
+  PRIMARY KEY (user_id, feed_id)
 );
 
--- Provider entries for a section subscription
-CREATE TABLE IF NOT EXISTS section_subscription_providers (
+-- Provider entries for a launch feed subscription.
+-- Previously named section_subscription_providers.
+-- D1 migration: ALTER TABLE section_subscription_providers RENAME TO feed_subscription_providers;
+CREATE TABLE IF NOT EXISTS feed_subscription_providers (
   user_id     TEXT    NOT NULL,
-  section_id  TEXT    NOT NULL,
+  feed_id     TEXT    NOT NULL,
   provider_id INTEGER NOT NULL,
-  PRIMARY KEY (user_id, section_id, provider_id)
+  PRIMARY KEY (user_id, feed_id, provider_id)
 );
 
--- Location entries for a section subscription
-CREATE TABLE IF NOT EXISTS section_subscription_locations (
+-- Location entries for a launch feed subscription.
+-- Previously named section_subscription_locations.
+-- D1 migration: ALTER TABLE section_subscription_locations RENAME TO feed_subscription_locations;
+CREATE TABLE IF NOT EXISTS feed_subscription_locations (
   user_id     TEXT    NOT NULL,
-  section_id  TEXT    NOT NULL,
+  feed_id     TEXT    NOT NULL,
   location_id INTEGER NOT NULL,
-  PRIMARY KEY (user_id, section_id, location_id)
+  PRIMARY KEY (user_id, feed_id, location_id)
+);
+
+-- Event type entries for an events feed subscription (empty = all event types)
+CREATE TABLE IF NOT EXISTS feed_subscription_event_types (
+  user_id       TEXT    NOT NULL,
+  feed_id       TEXT    NOT NULL,
+  event_type_id INTEGER NOT NULL,
+  PRIMARY KEY (user_id, feed_id, event_type_id)
+);
+
+-- News source entries for a news feed subscription (empty = all sources)
+CREATE TABLE IF NOT EXISTS feed_subscription_news_sources (
+  user_id  TEXT NOT NULL,
+  feed_id  TEXT NOT NULL,
+  source   TEXT NOT NULL,
+  PRIMARY KEY (user_id, feed_id, source)
+);
+
+-- Astronaut agency entries for an astronauts feed subscription (empty = all agencies)
+CREATE TABLE IF NOT EXISTS feed_subscription_astronaut_agencies (
+  user_id    TEXT    NOT NULL,
+  feed_id    TEXT    NOT NULL,
+  agency_id  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, feed_id, agency_id)
 );
 
 -- Explicit per-launch opt-outs for users with subscribe_all_upcoming or fan-out subscriptions.
@@ -120,18 +155,49 @@ CREATE TABLE IF NOT EXISTS launch_opt_outs (
   PRIMARY KEY (user_id, launch_id)
 );
 
+-- Upcoming space events from LL2 /events/upcoming/
+CREATE TABLE IF NOT EXISTS events (
+  id            INTEGER PRIMARY KEY,  -- LL2 event ID
+  name          TEXT NOT NULL,
+  event_type_id INTEGER,
+  event_type    TEXT,                 -- human-readable type name e.g. "Static Fire"
+  description   TEXT,
+  location      TEXT,
+  date          INTEGER,              -- unix timestamp of the event
+  last_updated  INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Deduplication log for event notifications — prevents re-sending the same reminder
+CREATE TABLE IF NOT EXISTS event_dispatch_log (
+  event_id      INTEGER NOT NULL,
+  window_label  TEXT    NOT NULL,   -- '24h' | '1h'
+  dispatched_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (event_id, window_label)
+);
+
+-- Last-known in-space status for each astronaut, used to detect status changes
+CREATE TABLE IF NOT EXISTS astronaut_status_snapshots (
+  astronaut_id  INTEGER PRIMARY KEY,
+  name          TEXT    NOT NULL,
+  in_space      INTEGER NOT NULL DEFAULT 0,  -- 1 = currently in space
+  agency_id     INTEGER,
+  flights_count INTEGER,
+  last_checked  INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_launch ON subscriptions(launch_id);
 CREATE INDEX IF NOT EXISTS idx_launches_t0 ON launches(t0);
+CREATE INDEX IF NOT EXISTS idx_events_date ON events(date);
 
--- Master on/off + source list for news notifications per user
+-- Legacy global news preference tables — superseded by per-feed news subscriptions.
+-- Kept for reference; no longer read by the notification dispatch pipeline.
 CREATE TABLE IF NOT EXISTS user_news_preferences (
   user_id    TEXT    PRIMARY KEY,
   enabled    INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
--- Which news sources a user has selected (empty = all sources)
 CREATE TABLE IF NOT EXISTS user_news_sources (
   user_id TEXT NOT NULL,
   source  TEXT NOT NULL,

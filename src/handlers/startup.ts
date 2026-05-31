@@ -5,7 +5,6 @@ import {
   getUserPreferences,
   getProviderSubscriptionsForUser,
   getLocationSubscriptionsForUser,
-  getNewsPreferences,
 } from '../db/queries'
 
 // GET /startup?userId=<id>
@@ -14,12 +13,11 @@ export async function handleStartup(c: Context<{ Bindings: Env }>) {
   const userId = c.req.query('userId')
   if (!userId) return c.json({ error: 'missing userId' }, 400)
 
-  const [subsResult, prefs, providerResult, locationResult, newsPrefs] = await Promise.all([
+  const [subsResult, prefs, providerResult, locationResult] = await Promise.all([
     getActiveSubscriptionsForUser(c.env.DB, userId),
     getUserPreferences(c.env.DB, userId),
     getProviderSubscriptionsForUser(c.env.DB, userId),
     getLocationSubscriptionsForUser(c.env.DB, userId),
-    getNewsPreferences(c.env.DB, userId),
   ])
 
   return c.json({
@@ -43,9 +41,5 @@ export async function handleStartup(c: Context<{ Bindings: Env }>) {
       locationId: r.location_id,
       location: r.location,
     })),
-    newsPreferences: {
-      enabled: newsPrefs.enabled,
-      sources: newsPrefs.sources,
-    },
   })
 }

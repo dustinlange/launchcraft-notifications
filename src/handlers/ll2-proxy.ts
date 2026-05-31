@@ -9,11 +9,12 @@ const LL2_DEFAULT_UPSTREAM = 'https://ll.thespacedevs.com/2.3.0'
 
 // Cache TTLs in seconds, keyed by path prefix (after version is stripped)
 const TTL_BY_PATH: Array<{ prefix: string; ttl: number }> = [
-  { prefix: '/launches/',  ttl: 120  },   // 2 min — launch data changes frequently
-  { prefix: '/events/',    ttl: 120  },   // 2 min — events also change frequently
-  { prefix: '/agencies/',  ttl: 86400 },  // 24h  — agencies almost never change
-  { prefix: '/pads/',      ttl: 86400 },  // 24h  — pads almost never change
-  { prefix: '/locations/', ttl: 86400 },  // 24h  — locations almost never change
+  { prefix: '/launches/',    ttl: 120   },  // 2 min  — launch data changes frequently
+  { prefix: '/events/',      ttl: 120   },  // 2 min  — events also change frequently
+  { prefix: '/astronauts/',  ttl: 600   },  // 10 min — in-space status changes infrequently
+  { prefix: '/agencies/',    ttl: 86400 },  // 24h    — agencies almost never change
+  { prefix: '/pads/',        ttl: 86400 },  // 24h    — pads almost never change
+  { prefix: '/locations/',   ttl: 86400 },  // 24h    — locations almost never change
 ]
 
 function ttlForPath(path: string): number {
