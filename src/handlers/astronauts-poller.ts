@@ -36,6 +36,9 @@ export async function pollAstronauts(env: Env): Promise<void> {
   const apnsConfig = getApnsConfig(env)
 
   for (const astronaut of astronauts) {
+    // Belt-and-suspenders: skip non-active astronauts even if the API filter misbehaves
+    if (astronaut.status?.id !== 1) continue
+
     const newInSpace = astronaut.in_space ? 1 : 0
     const existing = snapshotMap.get(astronaut.id)
 
