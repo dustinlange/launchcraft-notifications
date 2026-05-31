@@ -105,7 +105,10 @@ export function createLL2Client(apiKey: string): LL2Client {
     },
 
     async getAstronauts(limit = 200): Promise<LL2Astronaut[]> {
-      const url = `${LL2_BASE}/astronauts/?limit=${limit}&ordering=id`
+      // status__id=1 filters to Active astronauts only, excluding retired/deceased.
+      // This keeps the result set small (~50-100 people) and ensures current crew
+      // members are included regardless of their LL2 ID ordering.
+      const url = `${LL2_BASE}/astronauts/?limit=${limit}&status__id=1&ordering=id`
       console.log(`LL2 GET ${url}`)
       const res = await fetch(url, { headers })
       console.log(`LL2 astronauts response: ${res.status}`)
