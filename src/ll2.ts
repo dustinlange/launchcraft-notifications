@@ -58,6 +58,7 @@ export interface LL2Astronaut {
   agency: { id: number; name: string } | null
   flights_count: number | null
   in_space: boolean
+  image: { image_url: string; thumbnail_url: string } | null
 }
 
 export interface LL2Client {

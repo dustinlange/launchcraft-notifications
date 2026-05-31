@@ -183,10 +183,11 @@ CREATE TABLE IF NOT EXISTS event_dispatch_log (
 CREATE TABLE IF NOT EXISTS astronaut_status_snapshots (
   astronaut_id  INTEGER PRIMARY KEY,
   name          TEXT    NOT NULL,
-  in_space      INTEGER NOT NULL DEFAULT 0,  -- 1 = currently in space
-  agency_id     INTEGER,
-  flights_count INTEGER,
-  last_checked  INTEGER NOT NULL DEFAULT (unixepoch())
+  in_space         INTEGER NOT NULL DEFAULT 0,  -- 1 = currently in space
+  agency_id        INTEGER,
+  flights_count    INTEGER,
+  entered_space_at INTEGER,                     -- unix timestamp of last 0→1 in_space transition
+  last_checked     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);

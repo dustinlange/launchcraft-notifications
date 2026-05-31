@@ -959,6 +959,7 @@ export interface AstronautSnapshot {
   in_space: number
   agency_id: number | null
   flights_count: number | null
+  entered_space_at: number | null  // unix timestamp when in_space last transitioned 0→1
   last_checked: number
 }
 
@@ -966,17 +967,22 @@ export function getAllAstronautSnapshots(db: D1Database) {
   return db.prepare('SELECT * FROM astronaut_status_snapshots').all<AstronautSnapshot>()
 }
 
-export function upsertAstronautSnapshot(db: D1Database, snap: Omit<AstronautSnapshot, 'last_checked'>) {
+export function upsertAstronautSnapshot(db: D1Database, snap: Omit<AstronautSnapshot, 'last_checked' | 'entered_space_at'>) {
   return db.prepare(`
-    INSERT INTO astronaut_status_snapshots (astronaut_id, name, in_space, agency_id, flights_count, last_checked)
-    VALUES (?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO astronaut_status_snapshots (astronaut_id, name, in_space, agency_id, flights_count, entered_space_at, last_checked)
+    VALUES (?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN unixepoch() ELSE NULL END, unixepoch())
     ON CONFLICT(astronaut_id) DO UPDATE SET
       name = excluded.name,
-      in_space = excluded.in_space,
       agency_id = excluded.agency_id,
       flights_count = excluded.flights_count,
+      entered_space_at = CASE
+        WHEN excluded.in_space = 1 AND astronaut_status_snapshots.in_space = 0 THEN unixepoch()
+        WHEN excluded.in_space = 1 THEN astronaut_status_snapshots.entered_space_at
+        ELSE NULL
+      END,
+      in_space = excluded.in_space,
       last_checked = unixepoch()
-  `).bind(snap.astronaut_id, snap.name, snap.in_space, snap.agency_id, snap.flights_count).run()
+  `).bind(snap.astronaut_id, snap.name, snap.in_space, snap.agency_id, snap.flights_count, snap.in_space).run()
 }
 
 /** Returns distinct users with an astronauts feed covering the given agency_id.

@@ -18,6 +18,7 @@ export async function pollAstronauts(env: Env): Promise<void> {
     agency: { id: number; name: string } | null
     flights_count: number | null
     in_space: boolean
+    image: { image_url: string; thumbnail_url: string } | null
   }>
   try {
     const client = createLL2Client(env.LL2_API_KEY)
@@ -55,20 +56,22 @@ export async function pollAstronauts(env: Env): Promise<void> {
         if (!wasInSpace && newInSpace === 1) {
           // Just launched to space
           const flightNum = astronaut.flights_count
-          title = '🚀 Launched to Space'
+          title = 'Astronaut Launched to Space'
           body = flightNum && flightNum > 0
             ? `${astronaut.name} has launched to space for the ${ordinal(flightNum)} time!`
             : `${astronaut.name} has launched to space!`
         } else {
-          // Returned to Earth
-          const daysInSpace = existing.last_checked
-            ? Math.round((Math.floor(Date.now() / 1000) - existing.last_checked) / 86400)
+          // Returned to Earth — use entered_space_at for an accurate day count
+          const daysInSpace = existing.entered_space_at
+            ? Math.round((Math.floor(Date.now() / 1000) - existing.entered_space_at) / 86400)
             : null
-          title = '🌍 Returned to Earth'
+          title = 'Astronaut Returned to Earth'
           body = daysInSpace && daysInSpace > 0
-            ? `${astronaut.name} has returned to Earth after approximately ${daysInSpace} day${daysInSpace === 1 ? '' : 's'} in space.`
+            ? `${astronaut.name} has returned to Earth after ${daysInSpace} day${daysInSpace === 1 ? '' : 's'} in space.`
             : `${astronaut.name} has returned to Earth.`
         }
+
+        const imageUrl = astronaut.image?.thumbnail_url ?? undefined
 
         await Promise.allSettled(
           users.map(async u => {
@@ -77,6 +80,7 @@ export async function pollAstronauts(env: Env): Promise<void> {
               body,
               launchId: '',
               type: 'astronaut_status',
+              imageUrl,
             })
             if (!result.ok && (result.status === 410 || result.status === 400)) {
               console.warn(`Clearing stale device token for ${u.user_id} after APNs ${result.status}`)
