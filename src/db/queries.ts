@@ -908,14 +908,12 @@ export function upsertEvent(db: D1Database, event: LL2Event) {
 
 export type EventWindowLabel = '24h' | '1h' | '10m'
 
-export function isEventDispatched(db: D1Database, eventId: number, windowLabel: EventWindowLabel) {
-  return db.prepare('SELECT 1 FROM event_dispatch_log WHERE event_id = ? AND window_label = ?')
-    .bind(eventId, windowLabel).first().then(r => r !== null)
-}
-
-export function markEventNotificationSent(db: D1Database, eventId: number, windowLabel: EventWindowLabel) {
-  return db.prepare('INSERT OR IGNORE INTO event_dispatch_log (event_id, window_label) VALUES (?, ?)')
+/** Atomically claims an event/window pair for dispatch.
+ *  Returns true if this caller won the claim and should proceed to send. */
+export async function claimEventForDispatch(db: D1Database, eventId: number, windowLabel: EventWindowLabel): Promise<boolean> {
+  const result = await db.prepare('INSERT OR IGNORE INTO event_dispatch_log (event_id, window_label) VALUES (?, ?)')
     .bind(eventId, windowLabel).run()
+  return result.meta.changes === 1
 }
 
 export function pruneOldEventDispatchLog(db: D1Database) {

@@ -2,8 +2,7 @@ import { Env } from '../index'
 import { createLL2Client } from '../ll2'
 import {
   upsertEvent,
-  isEventDispatched,
-  markEventNotificationSent,
+  claimEventForDispatch,
   pruneOldEventDispatchLog,
   getUsersForEventType,
   clearDeviceToken,
@@ -68,15 +67,13 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
     for (const window of windows) {
       if (timeUntil < window.fromS || timeUntil > window.toS) continue
 
-      const alreadySent = await isEventDispatched(env.DB, e.id, window.label)
-      if (alreadySent) continue
+      // Atomically claim this event/window — skip if another Worker instance beat us to it
+      const claimed = await claimEventForDispatch(env.DB, e.id, window.label)
+      if (!claimed) continue
 
       // getUsersForEventType filters by both feed subscription and per-user reminder preference
       const { results: users } = await getUsersForEventType(env.DB, e.type?.id ?? null, window.label)
-      if (users.length === 0) {
-        await markEventNotificationSent(env.DB, e.id, window.label)
-        continue
-      }
+      if (users.length === 0) continue
 
       const title = e.type?.name ? `${e.type.name}: ${e.name}` : e.name
       const body = e.location
@@ -100,7 +97,6 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
         })
       )
 
-      await markEventNotificationSent(env.DB, e.id, window.label)
     }
   }
 }
