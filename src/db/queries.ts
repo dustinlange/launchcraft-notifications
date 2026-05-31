@@ -976,8 +976,8 @@ export function upsertAstronautSnapshot(db: D1Database, snap: Omit<AstronautSnap
       agency_id = excluded.agency_id,
       flights_count = excluded.flights_count,
       entered_space_at = CASE
-        WHEN excluded.in_space = 1 AND astronaut_status_snapshots.in_space = 0 THEN unixepoch()
-        WHEN excluded.in_space = 1 THEN astronaut_status_snapshots.entered_space_at
+        WHEN excluded.in_space = 1 AND in_space = 0 THEN unixepoch()
+        WHEN excluded.in_space = 1 THEN entered_space_at
         ELSE NULL
       END,
       in_space = excluded.in_space,
