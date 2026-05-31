@@ -33,7 +33,7 @@ export async function handleTestTrigger(c: Context<{ Bindings: Env }>) {
   if (!launch) return c.json({ error: 'launch not found' }, 404)
 
   const sub = await c.env.DB.prepare(
-    'SELECT * FROM subscriptions WHERE launch_id = ? AND user_id = ?'
+    'SELECT * FROM launch_subscriptions WHERE launch_id = ? AND user_id = ?'
   ).bind(launchId, userId).first()
   if (!sub) return c.json({ error: 'subscription not found for this user and launch' }, 404)
 
@@ -64,7 +64,7 @@ export async function handleTestTrigger(c: Context<{ Bindings: Env }>) {
 
     // Reset dispatch and reminder flags on the subscription
     c.env.DB.prepare(`
-      UPDATE subscriptions
+      UPDATE launch_subscriptions
       SET start_dispatched = 0, reminded_24h = 1, reminded_1h = 1, reminded_10m = 1
       WHERE launch_id = ? AND user_id = ?
     `).bind(launchId, userId),

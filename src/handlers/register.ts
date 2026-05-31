@@ -72,11 +72,11 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     await c.env.DB.batch([
       // Re-home subscriptions that don't already exist under the new user ID
       c.env.DB.prepare(`
-        INSERT OR IGNORE INTO subscriptions (id, launch_id, user_id, activity_token, activity_id, attributes_json, start_dispatched, reminded_24h, reminded_1h, reminded_10m, created_at)
+        INSERT OR IGNORE INTO launch_subscriptions (id, launch_id, user_id, activity_token, activity_id, attributes_json, start_dispatched, reminded_24h, reminded_1h, reminded_10m, created_at)
         SELECT id, launch_id, ?, activity_token, activity_id, attributes_json, start_dispatched, reminded_24h, reminded_1h, reminded_10m, created_at
-        FROM subscriptions WHERE user_id = ?
+        FROM launch_subscriptions WHERE user_id = ?
       `).bind(userId, oldUserId),
-      c.env.DB.prepare('DELETE FROM subscriptions WHERE user_id = ?').bind(oldUserId),
+      c.env.DB.prepare('DELETE FROM launch_subscriptions WHERE user_id = ?').bind(oldUserId),
       c.env.DB.prepare('DELETE FROM user_devices WHERE user_id = ?').bind(oldUserId),
       c.env.DB.prepare('DELETE FROM user_preferences WHERE user_id = ?').bind(oldUserId),
     ])
@@ -153,7 +153,7 @@ export async function handleClearActivityToken(c: Context<{ Bindings: Env }>) {
   if (!userId || !launchId) return c.json({ error: 'missing required fields' }, 400)
 
   await c.env.DB.prepare(`
-    UPDATE subscriptions SET activity_token = NULL, activity_id = NULL
+    UPDATE launch_subscriptions SET activity_token = NULL, activity_id = NULL
     WHERE user_id = ? AND launch_id = ?
   `).bind(userId, launchId).run()
 
@@ -220,7 +220,7 @@ export async function handlePushToStartToken(c: Context<{ Bindings: Env }>) {
 
   await updatePushToStartTokenForUser(c.env.DB, userId, pushToStartToken)
   // Reset start_dispatched so we can retry push-to-start with the new token
-  await c.env.DB.prepare('UPDATE subscriptions SET start_dispatched = 0 WHERE user_id = ?').bind(userId).run()
+  await c.env.DB.prepare('UPDATE launch_subscriptions SET start_dispatched = 0 WHERE user_id = ?').bind(userId).run()
   return c.json({ ok: true })
 }
 
@@ -373,7 +373,7 @@ export async function sendPushToStart(
     // Atomically claim the subscription before sending — prevents duplicate pushes
     // from concurrent cron invocations or simultaneous /register calls.
     const claim = await env.DB.prepare(
-      'UPDATE subscriptions SET start_dispatched = 1 WHERE user_id = ? AND launch_id = ? AND start_dispatched = 0'
+      'UPDATE launch_subscriptions SET start_dispatched = 1 WHERE user_id = ? AND launch_id = ? AND start_dispatched = 0'
     ).bind(userId, launchId).run()
     if (claim.meta.changes === 0) return
 
@@ -399,7 +399,7 @@ export async function sendPushToStart(
       } else {
         // Transient failure — roll back the claim so the next cron cycle can retry
         await env.DB.prepare(
-          'UPDATE subscriptions SET start_dispatched = 0 WHERE user_id = ? AND launch_id = ?'
+          'UPDATE launch_subscriptions SET start_dispatched = 0 WHERE user_id = ? AND launch_id = ?'
         ).bind(userId, launchId).run()
       }
     }

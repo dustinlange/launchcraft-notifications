@@ -108,7 +108,7 @@ export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'
 export function getActiveSubscriptionsForUser(db: D1Database, userId: string) {
   return db.prepare(`
     SELECT s.launch_id, l.name, l.provider
-    FROM subscriptions s
+    FROM launch_subscriptions s
     JOIN launches l ON l.id = s.launch_id
     WHERE s.user_id = ?
       AND l.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
@@ -120,7 +120,7 @@ export function getSubscriptionsForLaunch(db: D1Database, launchId: string) {
     SELECT s.*, ud.device_token, ud.push_to_start_token,
            up.notify_net_change, up.notify_status_change, up.notify_terminal_status,
            l.image_url, l.rocket_image_url
-    FROM subscriptions s
+    FROM launch_subscriptions s
     JOIN user_devices ud ON ud.user_id = s.user_id
     JOIN launches l ON l.id = s.launch_id
     LEFT JOIN user_preferences up ON up.user_id = s.user_id
@@ -130,7 +130,7 @@ export function getSubscriptionsForLaunch(db: D1Database, launchId: string) {
 
 export function upsertSubscription(db: D1Database, sub: Pick<Subscription, 'launch_id' | 'user_id' | 'attributes_json'>) {
   return db.prepare(`
-    INSERT INTO subscriptions (launch_id, user_id, attributes_json)
+    INSERT INTO launch_subscriptions (launch_id, user_id, attributes_json)
     VALUES (?, ?, ?)
     ON CONFLICT(launch_id, user_id) DO UPDATE SET
       attributes_json = COALESCE(excluded.attributes_json, attributes_json)
@@ -164,13 +164,13 @@ export function backfillAttributesJson(
     missionPatchUrl: null,
   })
   return db.prepare(`
-    UPDATE subscriptions SET attributes_json = ?
+    UPDATE launch_subscriptions SET attributes_json = ?
     WHERE launch_id = ? AND attributes_json IS NULL
   `).bind(attrs, launchId).run()
 }
 
 export function deleteSubscription(db: D1Database, userId: string, launchId: string) {
-  return db.prepare('DELETE FROM subscriptions WHERE user_id = ? AND launch_id = ?')
+  return db.prepare('DELETE FROM launch_subscriptions WHERE user_id = ? AND launch_id = ?')
     .bind(userId, launchId).run()
 }
 
@@ -197,7 +197,7 @@ export function updatePushToStartTokenForUser(db: D1Database, userId: string, to
 
 export function fanOutProviderSubscriptions(db: D1Database, launchId: string, providerId: number) {
   return db.prepare(`
-    INSERT OR IGNORE INTO subscriptions (launch_id, user_id)
+    INSERT OR IGNORE INTO launch_subscriptions (launch_id, user_id)
     SELECT ?, ps.user_id
     FROM provider_subscriptions ps
     JOIN user_devices ud ON ud.user_id = ps.user_id
@@ -337,12 +337,12 @@ export function deleteFeedSubscription(db: D1Database, userId: string, feedId: s
     // Non-launches feeds (events/news/astronauts) don't fan-out to the subscriptions table,
     // so the DELETE is scoped only to this feed's provider/location/all-upcoming coverage.
     db.prepare(`
-      DELETE FROM subscriptions
+      DELETE FROM launch_subscriptions
       WHERE user_id = ?
         AND launch_id IN (
           SELECT l.id
           FROM launches l
-          INNER JOIN subscriptions s ON s.launch_id = l.id AND s.user_id = ?
+          INNER JOIN launch_subscriptions s ON s.launch_id = l.id AND s.user_id = ?
           WHERE (
             -- This feed covers the launch via a provider filter
             l.provider_id IN (
@@ -440,7 +440,7 @@ export function deleteLocationSubscription(db: D1Database, userId: string, locat
 
 export function fanOutLocationSubscriptions(db: D1Database, launchId: string, padLocationId: number) {
   return db.prepare(`
-    INSERT OR IGNORE INTO subscriptions (launch_id, user_id)
+    INSERT OR IGNORE INTO launch_subscriptions (launch_id, user_id)
     SELECT ?, ls.user_id
     FROM location_subscriptions ls
     JOIN user_devices ud ON ud.user_id = ls.user_id
@@ -458,7 +458,7 @@ export function fanOutLocationSubscriptions(db: D1Database, launchId: string, pa
 
 export function resetReminderFlags(db: D1Database, launchId: string) {
   return db.prepare(`
-    UPDATE subscriptions SET reminded_24h = 0, reminded_1h = 0, reminded_10m = 0
+    UPDATE launch_subscriptions SET reminded_24h = 0, reminded_1h = 0, reminded_10m = 0
     WHERE launch_id = ?
   `).bind(launchId).run()
 }
@@ -469,7 +469,7 @@ export function getSubscriptionsNeedingStart(db: D1Database, now: number) {
            l.name as launch_name, l.t0, l.window_start, l.window_end, l.ll2_status_id,
            first_te.label   AS first_event_name,
            first_te.fire_at AS first_event_fire_at
-    FROM subscriptions s
+    FROM launch_subscriptions s
     JOIN user_devices ud ON ud.user_id = s.user_id
     JOIN launches l ON l.id = s.launch_id
     LEFT JOIN user_preferences up ON up.user_id = s.user_id
@@ -490,7 +490,7 @@ export function getSubscriptionsNeedingStart(db: D1Database, now: number) {
 }
 
 export function markStartDispatched(db: D1Database, subscriptionId: string) {
-  return db.prepare('UPDATE subscriptions SET start_dispatched = 1 WHERE id = ?')
+  return db.prepare('UPDATE launch_subscriptions SET start_dispatched = 1 WHERE id = ?')
     .bind(subscriptionId).run()
 }
 
@@ -516,7 +516,7 @@ export function markEndDispatched(db: D1Database, launchId: string) {
 
 export function updateActivityToken(db: D1Database, userId: string, launchId: string, activityToken: string, activityId: string) {
   return db.prepare(`
-    UPDATE subscriptions SET activity_token = ?, activity_id = ?
+    UPDATE launch_subscriptions SET activity_token = ?, activity_id = ?
     WHERE user_id = ? AND launch_id = ?
   `).bind(activityToken, activityId, userId, launchId).run()
 }
@@ -575,8 +575,8 @@ export function markTransitionSent(db: D1Database, eventId: string) {
 
 export function getSubscribedLaunchIds(db: D1Database) {
   return db.prepare(`
-    SELECT DISTINCT launch_id FROM subscriptions
-    JOIN launches ON launches.id = subscriptions.launch_id
+    SELECT DISTINCT launch_id FROM launch_subscriptions
+    JOIN launches ON launches.id = launch_subscriptions.launch_id
     WHERE launches.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
   `).all<{ launch_id: string }>()
 }
@@ -592,7 +592,7 @@ export function getSubscriptionsNeedingReminder(
   return db.prepare(`
     SELECT s.id, ud.device_token, s.launch_id, s.user_id, l.name as launch_name, l.t0, l.rocket,
            l.image_url, l.rocket_image_url
-    FROM subscriptions s
+    FROM launch_subscriptions s
     JOIN user_devices ud ON ud.user_id = s.user_id
     JOIN launches l ON l.id = s.launch_id
     LEFT JOIN user_preferences up ON up.user_id = s.user_id
@@ -669,7 +669,7 @@ export function upsertUserPreferences(
 
 export function fanOutAllUpcomingSubscriptions(db: D1Database, launchId: string) {
   return db.prepare(`
-    INSERT OR IGNORE INTO subscriptions (launch_id, user_id)
+    INSERT OR IGNORE INTO launch_subscriptions (launch_id, user_id)
     SELECT ?, fs.user_id
     FROM feed_subscriptions fs
     JOIN user_devices ud ON ud.user_id = fs.user_id
@@ -736,7 +736,7 @@ export function clearOptOutsForFeedSubscription(
 
 export function markReminderSent(db: D1Database, subscriptionId: string, windowLabel: '24h' | '1h' | '10m') {
   const col = windowLabel === '24h' ? 'reminded_24h' : windowLabel === '1h' ? 'reminded_1h' : 'reminded_10m'
-  return db.prepare(`UPDATE subscriptions SET ${col} = 1 WHERE id = ?`).bind(subscriptionId).run()
+  return db.prepare(`UPDATE launch_subscriptions SET ${col} = 1 WHERE id = ?`).bind(subscriptionId).run()
 }
 
 export function getActiveNoTimelineLaunches(db: D1Database) {
@@ -755,7 +755,7 @@ export function getLaunchesNearT0(db: D1Database, fromTs: number, toTs: number) 
   return db.prepare(`
     SELECT DISTINCT l.id
     FROM launches l
-    JOIN subscriptions s ON s.launch_id = l.id
+    JOIN launch_subscriptions s ON s.launch_id = l.id
     WHERE l.t0 BETWEEN ? AND ?
       AND l.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
   `).bind(fromTs, toTs).all<{ id: string }>()
@@ -849,7 +849,7 @@ export function recalculateTimelineFireAt(db: D1Database, launchId: string, t0: 
 
 export function clearActivityToken(db: D1Database, subscriptionId: string) {
   return db.prepare(
-    'UPDATE subscriptions SET activity_token = NULL, activity_id = NULL WHERE id = ?'
+    'UPDATE launch_subscriptions SET activity_token = NULL, activity_id = NULL WHERE id = ?'
   ).bind(subscriptionId).run()
 }
 

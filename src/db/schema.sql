@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS location_subscriptions (
 
 -- Per-user subscriptions to a launch
 -- One row per (user, launch) pair
-CREATE TABLE IF NOT EXISTS subscriptions (
+CREATE TABLE IF NOT EXISTS launch_subscriptions (
   id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
   launch_id         TEXT NOT NULL REFERENCES launches(id) ON DELETE CASCADE,
   activity_token      TEXT,            -- Live Activity push token; NULL until activity started
@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS astronaut_status_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_launch ON subscriptions(launch_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_launch ON launch_subscriptions(launch_id);
 CREATE INDEX IF NOT EXISTS idx_launches_t0 ON launches(t0);
 CREATE INDEX IF NOT EXISTS idx_events_date ON events(date);
 

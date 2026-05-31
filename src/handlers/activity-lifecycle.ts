@@ -42,7 +42,7 @@ export async function detectSilentPushToStartFailures(env: Env) {
   const staleWindowS = 5 * 60 // 5 minutes past T0 — enough time for the activity token to arrive
   const { results } = await env.DB.prepare(`
     SELECT s.id, s.user_id, s.launch_id, l.name as launch_name, ud.push_to_start_token
-    FROM subscriptions s
+    FROM launch_subscriptions s
     JOIN launches l ON l.id = s.launch_id
     JOIN user_devices ud ON ud.user_id = s.user_id
     WHERE s.start_dispatched = 1
@@ -99,7 +99,7 @@ export async function dispatchActivityEnds(env: Env) {
     // activity will remain on device until the user dismisses it manually, but at least
     // the DB won't keep retrying with dead tokens.
     await env.DB.prepare(
-      `UPDATE subscriptions SET activity_token = NULL, activity_id = NULL
+      `UPDATE launch_subscriptions SET activity_token = NULL, activity_id = NULL
        WHERE launch_id = ?`
     ).bind(launch.id).run()
   }))
