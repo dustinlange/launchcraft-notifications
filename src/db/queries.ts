@@ -391,17 +391,16 @@ export function deleteFeedSubscription(db: D1Database, userId: string, feedId: s
           )
         )
     `).bind(
-      userId,
-      userId,
-      userId, feedId,
-      userId, feedId,
-      userId, feedId,
-      userId, feedId,
-      userId, feedId,
-      userId, feedId,
-      userId, feedId,
-      userId,
-      userId,
+      userId,         // outer DELETE: user_id = ?
+      userId,         // JOIN: s.user_id = ?
+      userId, feedId, // provider filter: user_id = ?, feed_id = ?
+      userId, feedId, // location filter: user_id = ?, feed_id = ?
+      userId, feedId, // all_upcoming: user_id = ?, feed_id = ?
+      userId, feedId, // exclude-provider: fsp.user_id = ?, fsp.feed_id != ?
+      userId, feedId, // exclude-location: fsl.user_id = ?, fsl.feed_id != ?
+      userId, feedId, // exclude-all-upcoming: fs.user_id = ?, fs.feed_id != ?
+      userId,         // direct provider: ps.user_id = ?
+      userId,         // direct location: ls.user_id = ?
     ),
 
     // Step 2: remove the feed subscription rows (order matters — after the DELETE above).
