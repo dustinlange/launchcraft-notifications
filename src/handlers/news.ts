@@ -29,7 +29,7 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
     await pruneOldDispatchLog(env.DB)
   }
 
-  const since = new Date(Date.now() - 10 * 60 * 1000)
+  const since = new Date(Date.now() - 30 * 60 * 1000)  // 30-min window — catches SNAPI indexing delays without processing too many articles
   let articles
   try {
     articles = await getRecentArticles(since)

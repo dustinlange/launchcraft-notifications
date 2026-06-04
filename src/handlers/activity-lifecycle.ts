@@ -33,29 +33,41 @@ export async function dispatchActivityStarts(env: Env) {
   ))
 }
 
-// Runs every minute via cron — detects push-to-start tokens that APNs silently accepted
-// but never delivered (start_dispatched=1, activity_token=NULL, T0 passed > 5 min ago).
-// These are typically rotated tokens APNs hasn't invalidated yet. Clears them so the user
-// gets a clean slate when they next open the app and re-register.
+// Runs every minute via cron — handles two push-to-start failure modes:
+//
+// 1. Pre-launch silent failure (T-0 still in the future): APNs accepted the push (200 OK)
+//    but iOS never started the activity. Reset start_dispatched so the cron retries before launch.
+//
+// 2. Post-launch stale token (T-0 > 5 min in the past): push was sent but activity never started.
+//    The token is likely rotated/invalid. Clear it so the user gets a clean slate on next launch.
 export async function detectSilentPushToStartFailures(env: Env) {
   const now = Math.floor(Date.now() / 1000)
   const staleWindowS = 5 * 60 // 5 minutes past T0 — enough time for the activity token to arrive
   const { results } = await env.DB.prepare(`
-    SELECT s.id, s.user_id, s.launch_id, l.name as launch_name, ud.push_to_start_token
+    SELECT s.id, s.user_id, s.launch_id, l.name as launch_name, l.t0, ud.push_to_start_token
     FROM launch_subscriptions s
     JOIN launches l ON l.id = s.launch_id
     JOIN user_devices ud ON ud.user_id = s.user_id
     WHERE s.start_dispatched = 1
       AND s.activity_token IS NULL
       AND l.t0 IS NOT NULL
-      AND l.t0 < ? - ${staleWindowS}
       AND l.end_dispatched = 0
       AND ud.push_to_start_token IS NOT NULL
-  `).bind(now).all<{ id: string; user_id: string; launch_id: string; launch_name: string; push_to_start_token: string }>()
+  `).bind().all<{ id: string; user_id: string; launch_id: string; launch_name: string; t0: number; push_to_start_token: string }>()
 
   for (const sub of results) {
-    console.warn(`[push-to-start] silent failure detected: start_dispatched=1 but no activity_token for ${sub.launch_id}/${sub.user_id} — clearing stale push-to-start token`)
-    await clearPushToStartToken(env.DB, sub.user_id, sub.push_to_start_token)
+    if (sub.t0 > now) {
+      // Launch hasn't happened yet — reset so the cron retries the push-to-start
+      console.warn(`[push-to-start] pre-launch silent failure for ${sub.launch_id}/${sub.user_id} — resetting start_dispatched to retry`)
+      await env.DB.prepare(
+        'UPDATE launch_subscriptions SET start_dispatched = 0 WHERE id = ?'
+      ).bind(sub.id).run()
+    } else if (sub.t0 < now - staleWindowS) {
+      // Launch is done and activity never started — token is stale, clear it
+      console.warn(`[push-to-start] post-launch silent failure for ${sub.launch_id}/${sub.user_id} — clearing stale push-to-start token`)
+      await clearPushToStartToken(env.DB, sub.user_id, sub.push_to_start_token)
+    }
+    // If t0 is within the 5-minute stale window, wait a bit longer before acting
   }
 }
 

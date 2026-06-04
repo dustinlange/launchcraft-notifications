@@ -8,7 +8,10 @@ import { getApnsConfig } from './webhook'
 export async function pollLL2(env: Env) {
   const client = createLL2Client(env.LL2_API_KEY)
   const launches = await client.getUpcomingLaunches(50)
-  await Promise.allSettled(launches.map(ll2 => syncLaunch(env, ll2)))
+  // Process in batches of 10 to avoid a single CPU burst from 50 concurrent syncs
+  for (let i = 0; i < launches.length; i += 10) {
+    await Promise.allSettled(launches.slice(i, i + 10).map(ll2 => syncLaunch(env, ll2)))
+  }
 
   const coveredIds = new Set(launches.map(l => l.id))
   const { results: subscribed } = await getSubscribedLaunchIds(env.DB)
@@ -55,7 +58,7 @@ export async function syncLaunchById(env: Env, id: string) {
 
 async function syncLaunch(env: Env, ll2: {
   id: string; name: string
-  mission: { name: string } | null
+  mission: { name: string; is_crewed: boolean } | null
   net: string | null; window_start: string | null; window_end: string | null
   status: { id: number; abbrev: string }
   image: { image_url: string } | null
@@ -94,26 +97,39 @@ async function syncLaunch(env: Env, ll2: {
     window_end: windowEnd,
     ll2_status_id: ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
+    is_crewed: ll2.mission != null ? (ll2.mission.is_crewed ? 1 : 0) : null,
     success_at: null,
     end_dispatched: 0,
   })
 
-  if (hasTimeline && t0) {
+  // Only upsert timeline events when something meaningful changed:
+  //  - new launch (prev is null) — rows don't exist yet
+  //  - T-0 shifted — fire_at values need recomputing
+  //  - launch just gained a timeline — rows need to be created
+  const timelineJustAppeared = hasTimeline && prev && !prev.has_timeline
+  if (hasTimeline && t0 && (!prev || t0Changed || timelineJustAppeared)) {
     await upsertTimelineEvents(env.DB, ll2.id, timeline, t0)
-  } else if (!hasTimeline && t0 && prev && prev.t0 !== t0) {
+  } else if (!hasTimeline && t0 && prev && t0Changed) {
     // T-0 shifted but LL2 returned no timeline — recompute fire_at from stored offsets
     await recalculateTimelineFireAt(env.DB, ll2.id, t0)
   }
 
-  // Fan-out errors must not prevent markSuccessAt or alert pushes from running
-  try {
-    if (ll2.launch_service_provider?.id) {
-      await fanOutProviderSubscriptions(env.DB, ll2.id, ll2.launch_service_provider.id)
+  // Fan-out: run for new launches or when a launch just moved to a confirmed-go status.
+  // Existing unchanged launches are skipped — new feed/provider/location subscriptions
+  // get their own immediate fan-out at subscription-creation time (handleSubscribeToFeed,
+  // handleSubscribeToProvider, handleSubscribeToLocation).
+  const isNewLaunch = !prev
+  const justBecameGo = statusChanged && (CONFIRMED_GO_IDS as number[]).includes(ll2StatusId)
+  if (isNewLaunch || justBecameGo) {
+    try {
+      if (ll2.launch_service_provider?.id) {
+        await fanOutProviderSubscriptions(env.DB, ll2.id, ll2.launch_service_provider.id)
+      }
+      await fanOutLocationSubscriptions(env.DB, ll2.id, ll2.pad.location.id)
+      await fanOutAllUpcomingSubscriptions(env.DB, ll2.id)
+    } catch (err) {
+      console.error(`syncLaunch: fan-out error for ${ll2.id}:`, err)
     }
-    await fanOutLocationSubscriptions(env.DB, ll2.id, ll2.pad.location.id)
-    await fanOutAllUpcomingSubscriptions(env.DB, ll2.id)
-  } catch (err) {
-    console.error(`syncLaunch: fan-out error for ${ll2.id}:`, err)
   }
 
   // Backfill attributes_json for any fan-out subscriptions that don't have it yet

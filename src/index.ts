@@ -106,16 +106,20 @@ export default {
         .then(() => dispatchReminders(env))
     )
 
-    // Every 5 minutes
+    // Every 5 minutes — heavy tasks spread across consecutive minutes to avoid CPU spikes.
+    // Minute 0 of each 5-min block: LL2 poll (50 launches, fan-out, DB writes)
     if (now % 300 < 60) {
       ctx.waitUntil(pollLL2(env))
       ctx.waitUntil(pollNoTimelineLaunches(env))
+    }
+    // Minute 1 of each 5-min block: news + events dispatch (up to 50 articles, APNs pushes)
+    if (now % 300 >= 60 && now % 300 < 120) {
       ctx.waitUntil(dispatchNewsNotifications(env))
       ctx.waitUntil(dispatchEventNotifications(env))
     }
 
-    // Every 15 minutes — poll astronaut in-space status
-    if (now % 900 < 60) {
+    // Every 15 minutes — offset to minute 2 so it doesn't overlap with LL2 poll
+    if (now % 900 >= 120 && now % 900 < 180) {
       ctx.waitUntil(pollAstronauts(env))
     }
 

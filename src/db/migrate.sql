@@ -3,6 +3,12 @@
 -- Safe to run because the app is not yet in production.
 -- =============================================================================
 
+-- Add is_crewed to launches (no-op if already added)
+ALTER TABLE launches ADD COLUMN is_crewed INTEGER;
+
+-- Add crewed_only to feed_subscriptions (no-op if already added)
+ALTER TABLE feed_subscriptions ADD COLUMN crewed_only INTEGER;
+
 -- Drop old section subscription tables (replaced by feed_subscription_*)
 DROP TABLE IF EXISTS section_subscription_locations;
 DROP TABLE IF EXISTS section_subscription_providers;
@@ -28,6 +34,7 @@ CREATE TABLE IF NOT EXISTS feed_subscriptions (
   feed_id       TEXT NOT NULL,   -- ForYouSection.id (UUID string)
   section_type  TEXT NOT NULL DEFAULT 'launches',  -- 'launches'|'events'|'news'|'astronauts'
   all_upcoming  INTEGER NOT NULL DEFAULT 0,   -- launches: 1 = subscribe to every upcoming launch
+  crewed_only   INTEGER,                      -- launches: NULL = all, 1 = crewed only, 0 = uncrewed only
   in_space_only INTEGER NOT NULL DEFAULT 0,   -- astronauts: 1 = only notify for in-space astronauts
   PRIMARY KEY (user_id, feed_id)
 );

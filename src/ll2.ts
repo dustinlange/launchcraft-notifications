@@ -15,7 +15,7 @@ export interface LL2Launch {
   rocket: { configuration: { name: string; image: { image_url: string } | null } }
   pad: { name: string; location: { id: number; name: string } }
   launch_service_provider: { id: number; name: string; logo_url: string | null } | null
-  mission: { name: string; description: string } | null
+  mission: { name: string; description: string; is_crewed: boolean } | null
   timeline: LL2TimelineEvent[] | null
 }
 

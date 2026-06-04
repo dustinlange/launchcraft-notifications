@@ -35,6 +35,7 @@ export interface Launch {
   window_end: number | null
   ll2_status_id: number
   has_timeline: number
+  is_crewed: number | null    // 1 = crewed, 0 = uncrewed, NULL = unknown
   success_at: number | null
   end_dispatched: number
   last_updated: number
@@ -79,8 +80,8 @@ export function getLaunch(db: D1Database, id: string) {
 
 export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'>) {
   return db.prepare(`
-    INSERT INTO launches (id, name, mission_name, rocket, pad, pad_location, pad_location_id, provider, provider_id, provider_logo_url, image_url, rocket_image_url, t0, window_start, window_end, ll2_status_id, has_timeline, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO launches (id, name, mission_name, rocket, pad, pad_location, pad_location_id, provider, provider_id, provider_logo_url, image_url, rocket_image_url, t0, window_start, window_end, ll2_status_id, has_timeline, is_crewed, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       mission_name = COALESCE(excluded.mission_name, mission_name),
@@ -94,14 +95,16 @@ export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'
       rocket_image_url = COALESCE(excluded.rocket_image_url, rocket_image_url),
       t0 = excluded.t0, window_start = excluded.window_start, window_end = excluded.window_end,
       ll2_status_id = excluded.ll2_status_id,
-      has_timeline = excluded.has_timeline, last_updated = unixepoch()
+      has_timeline = excluded.has_timeline,
+      is_crewed = COALESCE(excluded.is_crewed, is_crewed),
+      last_updated = unixepoch()
   `).bind(
     launch.id, launch.name, launch.mission_name, launch.rocket, launch.pad,
     launch.pad_location, launch.pad_location_id,
     launch.provider, launch.provider_id, launch.provider_logo_url,
     launch.image_url, launch.rocket_image_url,
     launch.t0, launch.window_start, launch.window_end,
-    launch.ll2_status_id, launch.has_timeline
+    launch.ll2_status_id, launch.has_timeline, launch.is_crewed ?? null
   ).run()
 }
 
@@ -195,6 +198,52 @@ export function updatePushToStartTokenForUser(db: D1Database, userId: string, to
   `).bind(userId, token).run()
 }
 
+/// Immediately fans out all existing upcoming launches to a newly created feed subscription.
+/// Called at subscription-creation time so the poll cycle doesn't need to re-run fan-out
+/// for every existing launch every 5 minutes.
+export function fanOutExistingLaunchesToFeedSubscription(
+  db: D1Database,
+  userId: string,
+  allUpcoming: boolean,
+  providerIds: number[],
+  locationIds: number[],
+  crewedOnly: boolean | null
+): Promise<D1Result> {
+  const filterBindings: (string | number)[] = []
+  let filterClause = ''
+
+  if (!allUpcoming) {
+    const conds: string[] = []
+    if (providerIds.length > 0) {
+      conds.push(`l.provider_id IN (${providerIds.map(() => '?').join(',')})`)
+      filterBindings.push(...providerIds)
+    }
+    if (locationIds.length > 0) {
+      conds.push(`l.pad_location_id IN (${locationIds.map(() => '?').join(',')})`)
+      filterBindings.push(...locationIds)
+    }
+    if (conds.length === 0) return Promise.resolve({ results: [], success: true, meta: {} as any })
+    filterClause = `AND (${conds.join(' OR ')})`
+  }
+
+  const crewedClause = crewedOnly === null
+    ? ''
+    : `AND (l.is_crewed IS NULL OR l.is_crewed = ${crewedOnly ? 1 : 0})`
+
+  const sql = `
+    INSERT OR IGNORE INTO launch_subscriptions (launch_id, user_id)
+    SELECT l.id, ?
+    FROM launches l
+    JOIN user_devices ud ON ud.user_id = ?
+    LEFT JOIN launch_opt_outs lo ON lo.user_id = ? AND lo.launch_id = l.id
+    WHERE l.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
+      AND lo.launch_id IS NULL
+      ${filterClause}
+      ${crewedClause}
+  `
+  return (db.prepare(sql) as D1PreparedStatement).bind(userId, userId, userId, ...filterBindings).run()
+}
+
 export function fanOutProviderSubscriptions(db: D1Database, launchId: string, providerId: number) {
   return db.prepare(`
     INSERT OR IGNORE INTO launch_subscriptions (launch_id, user_id)
@@ -208,9 +257,11 @@ export function fanOutProviderSubscriptions(db: D1Database, launchId: string, pr
     FROM feed_subscription_providers fsp
     JOIN user_devices ud ON ud.user_id = fsp.user_id
     JOIN feed_subscriptions fs ON fs.user_id = fsp.user_id AND fs.feed_id = fsp.feed_id AND fs.section_type = 'launches'
+    JOIN launches l ON l.id = ?
     LEFT JOIN launch_opt_outs lo ON lo.user_id = fsp.user_id AND lo.launch_id = ?
     WHERE fsp.provider_id = ? AND lo.launch_id IS NULL
-  `).bind(launchId, launchId, providerId, launchId, launchId, providerId).run()
+      AND (fs.crewed_only IS NULL OR l.is_crewed IS NULL OR fs.crewed_only = l.is_crewed)
+  `).bind(launchId, launchId, providerId, launchId, launchId, launchId, providerId).run()
 }
 
 export function getProviderSubscriptionsForUser(db: D1Database, userId: string) {
@@ -226,22 +277,26 @@ export function upsertProviderSubscription(db: D1Database, userId: string, provi
 
 /// Inserts or replaces a launches feed subscription record.
 /// Pass allUpcoming=true and empty arrays for "all upcoming" feeds.
+/// crewedOnly: null = no filter (all launches), true = crewed only, false = uncrewed only.
 export function upsertLaunchesFeedSubscription(
   db: D1Database,
   userId: string,
   feedId: string,
   allUpcoming: boolean,
   providerIds: number[],
-  locationIds: number[]
+  locationIds: number[],
+  crewedOnly: boolean | null = null
 ) {
+  const crewedOnlyVal = crewedOnly === null ? null : (crewedOnly ? 1 : 0)
   const stmts = [
     db.prepare(`
-      INSERT INTO feed_subscriptions (user_id, feed_id, section_type, all_upcoming)
-      VALUES (?, ?, 'launches', ?)
+      INSERT INTO feed_subscriptions (user_id, feed_id, section_type, all_upcoming, crewed_only)
+      VALUES (?, ?, 'launches', ?, ?)
       ON CONFLICT(user_id, feed_id) DO UPDATE SET
         section_type = 'launches',
-        all_upcoming = excluded.all_upcoming
-    `).bind(userId, feedId, allUpcoming ? 1 : 0),
+        all_upcoming = excluded.all_upcoming,
+        crewed_only = excluded.crewed_only
+    `).bind(userId, feedId, allUpcoming ? 1 : 0, crewedOnlyVal),
     // Clear old filter entries so re-subscribing with a different filter is always clean
     db.prepare('DELETE FROM feed_subscription_providers WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
     db.prepare('DELETE FROM feed_subscription_locations WHERE user_id = ? AND feed_id = ?').bind(userId, feedId),
@@ -450,9 +505,11 @@ export function fanOutLocationSubscriptions(db: D1Database, launchId: string, pa
     FROM feed_subscription_locations fsl
     JOIN user_devices ud ON ud.user_id = fsl.user_id
     JOIN feed_subscriptions fs ON fs.user_id = fsl.user_id AND fs.feed_id = fsl.feed_id AND fs.section_type = 'launches'
+    JOIN launches l ON l.id = ?
     LEFT JOIN launch_opt_outs lo ON lo.user_id = fsl.user_id AND lo.launch_id = ?
     WHERE fsl.location_id = ? AND lo.launch_id IS NULL
-  `).bind(launchId, launchId, padLocationId, launchId, launchId, padLocationId).run()
+      AND (fs.crewed_only IS NULL OR l.is_crewed IS NULL OR fs.crewed_only = l.is_crewed)
+  `).bind(launchId, launchId, padLocationId, launchId, launchId, launchId, padLocationId).run()
 }
 
 export function resetReminderFlags(db: D1Database, launchId: string) {
@@ -684,9 +741,11 @@ export function fanOutAllUpcomingSubscriptions(db: D1Database, launchId: string)
     SELECT ?, fs.user_id
     FROM feed_subscriptions fs
     JOIN user_devices ud ON ud.user_id = fs.user_id
+    JOIN launches l ON l.id = ?
     LEFT JOIN launch_opt_outs lo ON lo.user_id = fs.user_id AND lo.launch_id = ?
     WHERE fs.all_upcoming = 1 AND fs.section_type = 'launches' AND lo.launch_id IS NULL
-  `).bind(launchId, launchId).run()
+      AND (fs.crewed_only IS NULL OR l.is_crewed IS NULL OR fs.crewed_only = l.is_crewed)
+  `).bind(launchId, launchId, launchId).run()
 }
 
 

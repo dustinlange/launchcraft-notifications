@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertLaunchesFeedSubscription, upsertEventsFeedSubscription, upsertNewsFeedSubscription, upsertAstronautsFeedSubscription, deleteFeedSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForFeedSubscription, getUserPreferences } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertLaunchesFeedSubscription, upsertEventsFeedSubscription, upsertNewsFeedSubscription, upsertAstronautsFeedSubscription, deleteFeedSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForFeedSubscription, getUserPreferences, fanOutExistingLaunchesToFeedSubscription } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -307,6 +307,7 @@ export async function handleSubscribeToFeed(c: Context<{ Bindings: Env }>) {
     // launches
     providerIds?: number[]
     locationIds?: number[]
+    crewedOnly?: boolean | null   // null = all, true = crewed only, false = uncrewed only
     // events
     eventTypeIds?: number[]
     // news
@@ -322,8 +323,14 @@ export async function handleSubscribeToFeed(c: Context<{ Bindings: Env }>) {
     const providerIds = Array.isArray(body.providerIds) ? body.providerIds : []
     const locationIds = Array.isArray(body.locationIds) ? body.locationIds : []
     const allUpcoming = providerIds.length === 0 && locationIds.length === 0
-    await upsertLaunchesFeedSubscription(c.env.DB, userId, feedId, allUpcoming, providerIds, locationIds)
+    const crewedOnly = body.crewedOnly ?? null
+    await upsertLaunchesFeedSubscription(c.env.DB, userId, feedId, allUpcoming, providerIds, locationIds, crewedOnly)
     await clearOptOutsForFeedSubscription(c.env.DB, userId, allUpcoming, providerIds, locationIds)
+    // Immediately fan out to existing upcoming launches so the poll cycle doesn't have to
+    // re-run fan-out for all 50 launches just to pick up this new subscription.
+    c.executionCtx.waitUntil(
+      fanOutExistingLaunchesToFeedSubscription(c.env.DB, userId, allUpcoming, providerIds, locationIds, crewedOnly)
+    )
   } else if (sectionType === 'events') {
     const eventTypeIds = Array.isArray(body.eventTypeIds) ? body.eventTypeIds : []
     await upsertEventsFeedSubscription(c.env.DB, userId, feedId, eventTypeIds)

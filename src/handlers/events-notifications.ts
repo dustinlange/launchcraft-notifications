@@ -36,17 +36,28 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
     return
   }
 
-  // Upsert all events so we have fresh dates and images
-  await Promise.allSettled(ll2Events.map(e => upsertEvent(env.DB, {
-    id: e.id,
-    name: e.name,
-    event_type_id: e.type?.id ?? null,
-    event_type: e.type?.name ?? null,
-    description: e.description,
-    location: e.location,
-    date: e.date ? Math.floor(new Date(e.date).getTime() / 1000) : null,
-    image_url: e.feature_image ?? null,
-  })))
+  // Only upsert events within the next 30 hours — far-future events don't need DB
+  // freshness every 5 minutes and their upserts dominate D1 write counts.
+  // 30h comfortably covers the 24h reminder window plus a buffer for scheduling drift.
+  const upsertCutoffS = now + 30 * 3600
+  await Promise.allSettled(
+    ll2Events
+      .filter(e => {
+        if (!e.date) return false
+        const ts = Math.floor(new Date(e.date).getTime() / 1000)
+        return ts > now && ts <= upsertCutoffS
+      })
+      .map(e => upsertEvent(env.DB, {
+        id: e.id,
+        name: e.name,
+        event_type_id: e.type?.id ?? null,
+        event_type: e.type?.name ?? null,
+        description: e.description,
+        location: e.location,
+        date: e.date ? Math.floor(new Date(e.date).getTime() / 1000) : null,
+        image_url: e.feature_image ?? null,
+      }))
+  )
 
   const apnsConfig = getApnsConfig(env)
 

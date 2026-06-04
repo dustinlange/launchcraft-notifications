@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS launches (
   rocket_image_url   TEXT,                    -- LL2 rocket configuration image URL (fallback)
   ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
   has_timeline     INTEGER NOT NULL DEFAULT 0,
+  is_crewed        INTEGER,                     -- 1 = crewed mission, 0 = uncrewed, NULL = unknown
   success_at       INTEGER,                     -- unix timestamp when status first became 'success'
   end_dispatched   INTEGER NOT NULL DEFAULT 0,  -- 1 after end push sent ~30min post terminal status
   last_updated     INTEGER NOT NULL DEFAULT (unixepoch())
@@ -102,6 +103,7 @@ CREATE TABLE IF NOT EXISTS feed_subscriptions (
   feed_id       TEXT NOT NULL,   -- ForYouSection.id (UUID string)
   section_type  TEXT NOT NULL DEFAULT 'launches',  -- 'launches'|'events'|'news'|'astronauts'
   all_upcoming  INTEGER NOT NULL DEFAULT 0,   -- launches: 1 = subscribe to every upcoming launch
+  crewed_only   INTEGER,                      -- launches: NULL = all, 1 = crewed only, 0 = uncrewed only
   in_space_only INTEGER NOT NULL DEFAULT 0,   -- astronauts: 1 = only notify for in-space astronauts
   PRIMARY KEY (user_id, feed_id)
 );
