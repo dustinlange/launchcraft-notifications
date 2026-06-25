@@ -5,6 +5,7 @@ import {
   getUserPreferences,
   getProviderSubscriptionsForUser,
   getLocationSubscriptionsForUser,
+  getOptedOutLaunchIds,
 } from '../db/queries'
 
 // GET /startup?userId=<id>
@@ -13,11 +14,12 @@ export async function handleStartup(c: Context<{ Bindings: Env }>) {
   const userId = c.req.query('userId')
   if (!userId) return c.json({ error: 'missing userId' }, 400)
 
-  const [subsResult, prefs, providerResult, locationResult] = await Promise.all([
+  const [subsResult, prefs, providerResult, locationResult, optOutResult] = await Promise.all([
     getActiveSubscriptionsForUser(c.env.DB, userId),
     getUserPreferences(c.env.DB, userId),
     getProviderSubscriptionsForUser(c.env.DB, userId),
     getLocationSubscriptionsForUser(c.env.DB, userId),
+    getOptedOutLaunchIds(c.env.DB, userId),
   ])
 
   return c.json({
@@ -38,11 +40,13 @@ export async function handleStartup(c: Context<{ Bindings: Env }>) {
       eventRemind24h:       prefs ? prefs.event_remind_24h       !== 0 : true,
       eventRemind1h:        prefs ? prefs.event_remind_1h        !== 0 : true,
       eventRemind10m:       prefs ? prefs.event_remind_10m       !== 0 : true,
+      notifyWebcastLive:    prefs ? prefs.notify_webcast_live    !== 0 : true,
     },
     providerIds: providerResult.results.map(r => r.provider_id),
     locations: locationResult.results.map(r => ({
       locationId: r.location_id,
       location: r.location,
     })),
+    optedOutLaunchIds: optOutResult.results.map(r => r.launch_id),
   })
 }

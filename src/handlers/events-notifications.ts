@@ -19,7 +19,11 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
     await pruneOldEventDispatchLog(env.DB)
   }
 
-  // Fetch upcoming events from LL2
+  // Fetch upcoming events from LL2, with an 11-minute KV cache so consecutive
+  // 5-minute cron runs share one LL2 call instead of each making their own.
+  const EVENTS_CACHE_KEY = 'll2_events_cache'
+  const EVENTS_CACHE_TTL_S = 11 * 60
+
   let ll2Events: Array<{
     id: number
     name: string
@@ -27,10 +31,17 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
     description: string | null
     location: string | null
     date: string | null
+    feature_image: string | null
   }>
   try {
-    const client = createLL2Client(env.LL2_API_KEY)
-    ll2Events = await client.getUpcomingEvents(100)
+    const cached = await env.KV.get(EVENTS_CACHE_KEY, 'text')
+    if (cached) {
+      ll2Events = JSON.parse(cached)
+    } else {
+      const client = createLL2Client(env.LL2_API_KEY)
+      ll2Events = await client.getUpcomingEvents(100)
+      env.KV.put(EVENTS_CACHE_KEY, JSON.stringify(ll2Events), { expirationTtl: EVENTS_CACHE_TTL_S })
+    }
   } catch (err) {
     console.error('dispatchEventNotifications: failed to fetch events from LL2', err)
     return
@@ -86,10 +97,10 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
       const { results: users } = await getUsersForEventType(env.DB, e.type?.id ?? null, window.label)
       if (users.length === 0) continue
 
-      const title = e.type?.name ? `${e.type.name}: ${e.name}` : e.name
+      const title = eventTypeTitle(e.type?.name)
       const body = e.location
-        ? `${window.text} at ${e.location}`
-        : window.text.charAt(0).toUpperCase() + window.text.slice(1)
+        ? `${e.name} starting ${window.text} at ${e.location}`
+        : `${e.name} starting ${window.text}`
 
       await Promise.allSettled(
         users.map(async u => {
@@ -110,4 +121,19 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
 
     }
   }
+}
+
+// Returns a display title based on the LL2 event type name:
+//   "Flyover"      → "Flyover Event"
+//   "Press Event"  → "Press Event"   (no double "Event")
+//   "Static Fire"  → "Static Fire"   (no "Event" added — reads naturally without it)
+//   null/undefined → "Upcoming Event" (fallback)
+//
+// Rule: append " Event" only when the type name doesn't already end in "event"
+// (case-insensitive) and the name on its own sounds incomplete without it.
+// In practice this mostly affects single-word activity types like Flyover, Webcast, etc.
+function eventTypeTitle(typeName: string | null | undefined): string {
+  if (!typeName) return 'Upcoming Event'
+  if (typeName.toLowerCase().endsWith('event')) return typeName
+  return `${typeName} Event`
 }

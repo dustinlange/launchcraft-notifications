@@ -41,6 +41,7 @@ export async function dispatchTimelineEvents(env: Env) {
             nextEventName: null,            // transition push will set next event
             nextEventDate: null,
             statusId: event.ll2_status_id,
+            isWebcastLive: (sub.webcast_live ?? 0) === 1,
           },
           alertTitle: event.launch_name,
           alertBody: event.label,
@@ -73,6 +74,7 @@ export async function dispatchTimelineEvents(env: Env) {
           nextEventName: transition.next_event_name,        // upcoming → countdown
           nextEventDate: transition.next_event_fire_at,
           statusId: transition.ll2_status_id,
+          isWebcastLive: (sub.webcast_live ?? 0) === 1,
         },
       })
     ))

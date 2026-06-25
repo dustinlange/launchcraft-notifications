@@ -35,6 +35,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
     window_end: body.windowEnd ?? null,
     ll2_status_id: body.ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
+    webcast_live: null,
     success_at: null,
     end_dispatched: 0,
   })
@@ -71,6 +72,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
           nextEventName: null,
           nextEventDate: null,
           statusId: body.ll2StatusId,
+          isWebcastLive: false,
         },
         alertTitle: statusChanged ? `${body.name}: ${statusLabel(body.ll2StatusId)}` : undefined,
         alertBody: t0Changed && body.t0 ? `Launch window updated` : undefined,

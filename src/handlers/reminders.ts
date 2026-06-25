@@ -1,73 +1,42 @@
 import { Env } from '../index'
-import { getSubscriptionsNeedingReminder, markReminderSent, clearDeviceToken } from '../db/queries'
+import { getAllDueReminders, markReminderSent, clearDeviceToken } from '../db/queries'
 import { pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
 
-interface ReminderWindow {
-  label: '24h' | '1h' | '10m'
-  offsetS: number     // seconds before T-0
-  toleranceS: number  // how wide a window to catch (slightly wider than cron interval)
-  title: (name: string) => string
-  body: (name: string) => string
+const WINDOW_COPY: Record<'24h' | '1h' | '10m', { title: string; body: (name: string) => string }> = {
+  '24h': { title: 'Launch in 24 hours!', body: name => `${name} is launching in 24 hours!` },
+  '1h':  { title: 'Launch in 1 hour!',   body: name => `${name} is launching in 1 hour!` },
+  '10m': { title: 'Launch in 10 minutes!', body: name => `${name} is launching in 10 minutes!` },
 }
 
-const WINDOWS: ReminderWindow[] = [
-  {
-    label: '24h',
-    offsetS: 24 * 60 * 60,
-    toleranceS: 90,
-    title: () => 'Launch in 24 hours!',
-    body: (name) => `${name} is launching in 24 hours!`,
-  },
-  {
-    label: '1h',
-    offsetS: 60 * 60,
-    toleranceS: 90,
-    title: () => 'Launch in 1 hour!',
-    body: (name) => `${name} is launching in 1 hour!`,
-  },
-  {
-    label: '10m',
-    offsetS: 10 * 60,
-    toleranceS: 90,
-    title: () => 'Launch in 10 minutes!',
-    body: (name) => `${name} is launching in 10 minutes!`,
-  },
-]
-
-// Runs every minute via cron — sends pre-launch reminder push notifications
+// Runs every minute via cron — sends pre-launch reminder push notifications.
+// Uses a single UNION ALL query to fetch all three reminder windows in one D1 round-trip
+// instead of three separate queries.
 export async function dispatchReminders(env: Env) {
   const now = Math.floor(Date.now() / 1000)
+  const { results: subs } = await getAllDueReminders(env.DB, now)
+  if (subs.length === 0) return
+
   const apnsConfig = getApnsConfig(env)
 
-  await Promise.allSettled(WINDOWS.map(async (window) => {
-    // We want launches whose T-0 falls in [now + offset, now + offset + tolerance]
-    const fromT0 = now + window.offsetS
-    const toT0 = now + window.offsetS + window.toleranceS
+  await Promise.allSettled(subs.map(async (sub) => {
+    const copy = WINDOW_COPY[sub.window_label]
+    const result = await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
+      title: copy.title,
+      body: copy.body(sub.launch_name),
+      launchId: sub.launch_id,
+      type: 'reminder',
+      imageUrl: sub.image_url ?? sub.rocket_image_url ?? undefined,
+    })
 
-    const { results: subs } = await getSubscriptionsNeedingReminder(env.DB, window.label, fromT0, toT0)
-    if (subs.length === 0) return
-
-    await Promise.allSettled(subs.map(async (sub) => {
-      const result = await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
-        title: window.title(sub.launch_name),
-        body: window.body(sub.launch_name),
-        launchId: sub.launch_id,
-        type: 'reminder',
-        imageUrl: sub.image_url ?? sub.rocket_image_url ?? undefined,
-      })
-
-      if (result.ok) {
-        await markReminderSent(env.DB, sub.id, window.label)
-      } else {
-        console.error(`reminder ${window.label} failed for ${sub.launch_id}/${sub.user_id}: ${result.status} ${result.body}`)
-        // Stale device token — clear it so future pushes don't keep hitting a dead token.
-        // The user will get a fresh token registered when they next open the app.
-        if (result.status === 410 || result.status === 400) {
-          console.warn(`Clearing stale device token for ${sub.user_id} after APNs ${result.status}`)
-          await clearDeviceToken(env.DB, sub.user_id, sub.device_token)
-        }
+    if (result.ok) {
+      await markReminderSent(env.DB, sub.id, sub.window_label)
+    } else {
+      console.error(`reminder ${sub.window_label} failed for ${sub.launch_id}/${sub.user_id}: ${result.status} ${result.body}`)
+      if (result.status === 410 || result.status === 400) {
+        console.warn(`Clearing stale device token for ${sub.user_id} after APNs ${result.status}`)
+        await clearDeviceToken(env.DB, sub.user_id, sub.device_token)
       }
-    }))
+    }
   }))
 }

@@ -14,6 +14,9 @@ import { dispatchEventNotifications } from './handlers/events-notifications'
 import { pollAstronauts } from './handlers/astronauts-poller'
 import { handleLL2Proxy } from './handlers/ll2-proxy'
 import { handleSNAPIProxy } from './handlers/snapi-proxy'
+import { handleProStatus } from './handlers/pro-status'
+import { handleGetFeedTemplates } from './handlers/feed-templates'
+import { handleAppStoreNotification } from './handlers/appstore-notifications'
 
 export interface Env {
   DB: D1Database
@@ -29,16 +32,20 @@ export interface Env {
   API_KEY: string
   API_KEY_PREVIOUS?: string  // kept during key rotation so old app versions keep working
   HEALTHCHECK_URL?: string   // dead man's switch — ping URL from healthchecks.io
+  ERROR_WEBHOOK_URL?: string // webhook to call when the cron handler throws (e.g. CPU limit)
 }
 
 const app = new Hono<{ Bindings: Env }>()
 
-// Require X-API-Key on all routes except /webhook (has its own secret) and /health.
+// Require X-API-Key on all routes except:
+// - /webhook (has its own HMAC secret)
+// - /health (public liveness check)
+// - /appstore-notification (Apple calls this directly — verified by JWS signature instead)
 // API_KEY_PREVIOUS is accepted during key rotation so old app versions keep working
 // while a new app build with the updated key rolls out.
 app.use('*', async (c, next) => {
   const path = new URL(c.req.url).pathname
-  if (path === '/webhook' || path === '/health') return next()
+  if (path === '/webhook' || path === '/health' || path === '/appstore-notification') return next()
 
   const key = c.req.header('X-API-Key')
   const validKeys = [c.env.API_KEY, c.env.API_KEY_PREVIOUS].filter(Boolean)
@@ -72,7 +79,11 @@ app.get('/feed-subscription', handleGetFeedSubscription)
 app.post('/feed-subscription', handleSubscribeToFeed)
 app.delete('/feed-subscription', handleUnsubscribeFromFeed)
 
+app.get('/feed-templates', handleGetFeedTemplates)
 app.get('/news-sources', handleGetNewsSources)
+
+app.post('/pro-status', handleProStatus)
+app.post('/appstore-notification', handleAppStoreNotification)
 
 app.get('/startup', handleStartup)
 
@@ -90,42 +101,69 @@ export default {
   fetch: app.fetch,
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+    // Top-level catch: if anything throws (CPU limit, unhandled rejection, etc.)
+    // ping the error webhook so you get alerted immediately.
+    try {
     const now = Math.floor(Date.now() / 1000)
 
-    // Every minute
+    // ─── Every minute (only truly time-sensitive tasks) ──────────────────────
+    // Timeline events and reminders need per-minute precision.
+    // Everything else is staggered below to reduce per-invocation D1 query count.
     ctx.waitUntil(dispatchTimelineEvents(env))
-    ctx.waitUntil(dispatchActivityStarts(env))
-    ctx.waitUntil(dispatchActivityEnds(env))
-    ctx.waitUntil(detectSilentPushToStartFailures(env))
-    // Prefetch runs first so that any T-0 changes (and their resetReminderFlags calls) are
-    // committed to the DB before reminders are dispatched. A prefetch failure is caught and
-    // logged rather than propagated — reminders must still run even if prefetch throws.
     ctx.waitUntil(
       prefetchNearT0Launches(env)
         .catch(err => console.error('[prefetch] failed, reminders will still run:', err))
         .then(() => dispatchReminders(env))
     )
 
-    // Every 5 minutes — heavy tasks spread across consecutive minutes to avoid CPU spikes.
-    // Minute 0 of each 5-min block: LL2 poll (50 launches, fan-out, DB writes)
+    // ─── Every 2 minutes ─────────────────────────────────────────────────────
+    // Activity starts: push-to-start fires up to 1h before launch; 2-min granularity is fine.
+    if (now % 120 < 60) {
+      ctx.waitUntil(dispatchActivityStarts(env))
+    }
+
+    // ─── Every 5 minutes, spread across 4 separate minute offsets ────────────
+    // Minute :00 — LL2 poll (bulk fetch, skip-if-unchanged, fan-out for new/changed only)
     if (now % 300 < 60) {
       ctx.waitUntil(pollLL2(env))
       ctx.waitUntil(pollNoTimelineLaunches(env))
     }
-    // Minute 1 of each 5-min block: news + events dispatch (up to 50 articles, APNs pushes)
+    // Minute :01 — news + events dispatch
     if (now % 300 >= 60 && now % 300 < 120) {
       ctx.waitUntil(dispatchNewsNotifications(env))
       ctx.waitUntil(dispatchEventNotifications(env))
     }
+    // Minute :02 — activity ends + silent push-to-start failure detection
+    // (neither is time-critical to the minute; 5-min granularity is fine)
+    if (now % 300 >= 120 && now % 300 < 180) {
+      ctx.waitUntil(dispatchActivityEnds(env))
+      ctx.waitUntil(detectSilentPushToStartFailures(env))
+    }
 
-    // Every 15 minutes — offset to minute 2 so it doesn't overlap with LL2 poll
-    if (now % 900 >= 120 && now % 900 < 180) {
+    // ─── Every 15 minutes, offset to minute :03 ──────────────────────────────
+    if (now % 900 >= 180 && now % 900 < 240) {
       ctx.waitUntil(pollAstronauts(env))
     }
 
     // Dead man's switch — ping healthchecks.io so we get alerted if the cron stops firing
     if (env.HEALTHCHECK_URL) {
       ctx.waitUntil(fetch(env.HEALTHCHECK_URL).catch(() => {}))
+    }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[cron] unhandled error:', message)
+      if (env.ERROR_WEBHOOK_URL) {
+        ctx.waitUntil(
+          fetch(env.ERROR_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: `🚨 Launchcraft cron error: ${message}`,
+              timestamp: new Date().toISOString(),
+            }),
+          }).catch(() => {})
+        )
+      }
     }
   },
 }

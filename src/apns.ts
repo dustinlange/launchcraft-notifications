@@ -26,6 +26,7 @@ export interface LaunchContentState {
   nextEventName: string | null    // next upcoming timeline event (shown with countdown)
   nextEventDate: number | null    // absolute Unix timestamp when next event will fire
   statusId: number                // LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
+  isWebcastLive: boolean          // true when the webcast stream is currently live
 }
 
 // Seconds between Unix epoch (Jan 1 1970) and Apple reference date (Jan 1 2001).
@@ -44,6 +45,7 @@ function toAppleContentState(cs: LaunchContentState): Record<string, unknown> {
     nextEventName:    cs.nextEventName,
     nextEventDate:    toApple(cs.nextEventDate),
     statusId:         cs.statusId,
+    isWebcastLive:    cs.isWebcastLive,
   }
 }
 
@@ -122,7 +124,7 @@ async function sendApns(
   kv: KVNamespace,
   config: ApnsConfig,
   deviceToken: string,
-  pushType: 'alert' | 'liveactivity',
+  pushType: 'alert' | 'background' | 'liveactivity',
   topic: string,
   payload: unknown
 ): Promise<{ ok: boolean; status: number; body: string }> {
@@ -136,12 +138,33 @@ async function sendApns(
       'apns-push-type': pushType,
       'apns-topic': topic,
       'content-type': 'application/json',
+      // Background pushes must use priority 5 (power-friendly); alert/liveactivity use 10 (default).
+      'apns-priority': pushType === 'background' ? '5' : '10',
     },
     body: JSON.stringify(payload),
   })
 
   const body = await res.text()
   return { ok: res.ok, status: res.status, body }
+}
+
+/**
+ * Sends a silent "pro status changed" background push to a device.
+ * The app handles this in application(_:didReceiveRemoteNotification:fetchCompletionHandler:)
+ * by calling ProManager.shared.refreshSubscriptionStatus().
+ *
+ * Uses push type "background" with content-available:1 and priority 5 (required by Apple).
+ * No alert, sound, or badge — the push is invisible to the user.
+ */
+export async function pushSilentProStatusChange(
+  kv: KVNamespace,
+  config: ApnsConfig,
+  deviceToken: string
+): Promise<{ ok: boolean; status: number; body: string }> {
+  return sendApns(kv, config, deviceToken, 'background', config.bundleId, {
+    aps: { 'content-available': 1 },
+    type: 'pro_status_refresh',
+  })
 }
 
 export async function pushLiveActivityUpdate(
@@ -178,7 +201,6 @@ export async function pushLiveActivityStart(
     alertTitle: string
     alertBody: string
     dismissalDate: number
-    staleDate?: number
   }
 ): Promise<{ ok: boolean; status: number; body: string }> {
   const topic = `${config.bundleId}.push-type.liveactivity`
@@ -191,7 +213,6 @@ export async function pushLiveActivityStart(
     alert: { title: params.alertTitle, body: params.alertBody },
     'dismissal-date': params.dismissalDate - APPLE_EPOCH_OFFSET,
   }
-  if (params.staleDate) aps['stale-date'] = params.staleDate - APPLE_EPOCH_OFFSET
 
   return sendApns(kv, config, pushToStartToken, 'liveactivity', topic, { aps })
 }

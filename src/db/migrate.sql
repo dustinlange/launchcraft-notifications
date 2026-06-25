@@ -117,3 +117,10 @@ CREATE TABLE IF NOT EXISTS astronaut_status_snapshots (
 -- Indexes
 -- -------------------------------------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_events_date ON events(date);
+
+-- =============================================================================
+-- Migration: webcast live feature
+-- =============================================================================
+ALTER TABLE launches ADD COLUMN webcast_live INTEGER;
+ALTER TABLE launch_subscriptions ADD COLUMN webcast_notified INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE user_preferences ADD COLUMN notify_webcast_live INTEGER NOT NULL DEFAULT 1;

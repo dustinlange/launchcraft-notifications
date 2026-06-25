@@ -20,6 +20,7 @@ export async function handleGetPreferences(c: Context<{ Bindings: Env }>) {
     eventRemind24h:        prefs ? prefs.event_remind_24h       !== 0 : true,
     eventRemind1h:         prefs ? prefs.event_remind_1h        !== 0 : true,
     eventRemind10m:        prefs ? prefs.event_remind_10m       !== 0 : true,
+    notifyWebcastLive:     prefs ? prefs.notify_webcast_live    !== 0 : true,
   })
 }
 
@@ -38,12 +39,14 @@ export async function handleSavePreferences(c: Context<{ Bindings: Env }>) {
     eventRemind24h: boolean
     eventRemind1h: boolean
     eventRemind10m: boolean
+    notifyWebcastLive: boolean
   }>()
 
   const { userId, remind24h, remind1h, remind10m,
           notifyNetChange, notifyStatusChange, notifyTerminalStatus,
           autoLiveActivity, liveActivityWindow,
-          eventRemind24h, eventRemind1h, eventRemind10m } = body
+          eventRemind24h, eventRemind1h, eventRemind10m,
+          notifyWebcastLive } = body
   if (!userId) return c.json({ error: 'missing userId' }, 400)
 
   await upsertUserPreferences(
@@ -52,6 +55,7 @@ export async function handleSavePreferences(c: Context<{ Bindings: Env }>) {
     notifyNetChange ?? false, notifyStatusChange ?? false, notifyTerminalStatus ?? true,
     autoLiveActivity ?? true, liveActivityWindow ?? 3600,
     eventRemind24h ?? true, eventRemind1h ?? true, eventRemind10m ?? true,
+    notifyWebcastLive ?? true,
   )
   return c.json({ ok: true })
 }

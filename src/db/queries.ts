@@ -28,8 +28,12 @@ export interface Launch {
   provider: string | null
   provider_id: number | null
   provider_logo_url: string | null
+  provider_social_logo_url: string | null
   image_url: string | null
   rocket_image_url: string | null
+  mission_patch_url: string | null
+  landing_location: string | null
+  landing_type_id: number | null
   t0: number | null
   window_start: number | null
   window_end: number | null
@@ -38,6 +42,7 @@ export interface Launch {
   is_crewed: number | null    // 1 = crewed, 0 = uncrewed, NULL = unknown
   success_at: number | null
   end_dispatched: number
+  webcast_live: number | null
   last_updated: number
 }
 
@@ -48,6 +53,7 @@ export interface Subscription {
   activity_id: string | null
   attributes_json: string | null
   start_dispatched: number
+  start_dispatched_at: number | null
   user_id: string
   created_at: number
 }
@@ -59,6 +65,11 @@ export interface SubscriptionWithDevice extends Subscription {
   notify_net_change: number | null
   notify_status_change: number | null
   notify_terminal_status: number | null
+  notify_webcast_live: number | null
+  // Per-subscription flags
+  webcast_notified: number
+  // Launch state
+  webcast_live: number | null
   // Launch images for notification thumbnails
   image_url: string | null
   rocket_image_url: string | null
@@ -78,10 +89,21 @@ export function getLaunch(db: D1Database, id: string) {
   return db.prepare('SELECT * FROM launches WHERE id = ?').bind(id).first<Launch>()
 }
 
+/// Fetches multiple launches by ID in a single query and returns them as a Map<id, Launch>.
+/// Use this in the bulk poll to replace N individual getLaunch() calls with one round-trip.
+export async function getLaunchesMap(db: D1Database, ids: string[]): Promise<Map<string, Launch>> {
+  if (ids.length === 0) return new Map()
+  const placeholders = ids.map(() => '?').join(', ')
+  const { results } = await (db.prepare(`SELECT * FROM launches WHERE id IN (${placeholders})`) as D1PreparedStatement)
+    .bind(...ids)
+    .all<Launch>()
+  return new Map(results.map(l => [l.id, l]))
+}
+
 export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'>) {
   return db.prepare(`
-    INSERT INTO launches (id, name, mission_name, rocket, pad, pad_location, pad_location_id, provider, provider_id, provider_logo_url, image_url, rocket_image_url, t0, window_start, window_end, ll2_status_id, has_timeline, is_crewed, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO launches (id, name, mission_name, rocket, pad, pad_location, pad_location_id, provider, provider_id, provider_logo_url, provider_social_logo_url, image_url, rocket_image_url, mission_patch_url, landing_location, landing_type_id, t0, window_start, window_end, ll2_status_id, has_timeline, is_crewed, webcast_live, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       mission_name = COALESCE(excluded.mission_name, mission_name),
@@ -91,20 +113,29 @@ export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'
       provider = COALESCE(excluded.provider, provider),
       provider_id = COALESCE(excluded.provider_id, provider_id),
       provider_logo_url = COALESCE(excluded.provider_logo_url, provider_logo_url),
+      provider_social_logo_url = COALESCE(excluded.provider_social_logo_url, provider_social_logo_url),
       image_url = COALESCE(excluded.image_url, image_url),
       rocket_image_url = COALESCE(excluded.rocket_image_url, rocket_image_url),
+      mission_patch_url = COALESCE(excluded.mission_patch_url, mission_patch_url),
+      landing_location = COALESCE(excluded.landing_location, landing_location),
+      landing_type_id = COALESCE(excluded.landing_type_id, landing_type_id),
       t0 = excluded.t0, window_start = excluded.window_start, window_end = excluded.window_end,
       ll2_status_id = excluded.ll2_status_id,
       has_timeline = excluded.has_timeline,
       is_crewed = COALESCE(excluded.is_crewed, is_crewed),
+      webcast_live = excluded.webcast_live,
       last_updated = unixepoch()
   `).bind(
     launch.id, launch.name, launch.mission_name, launch.rocket, launch.pad,
     launch.pad_location, launch.pad_location_id,
     launch.provider, launch.provider_id, launch.provider_logo_url,
+    launch.provider_social_logo_url ?? null,
     launch.image_url, launch.rocket_image_url,
+    launch.mission_patch_url ?? null,
+    launch.landing_location ?? null, launch.landing_type_id ?? null,
     launch.t0, launch.window_start, launch.window_end,
-    launch.ll2_status_id, launch.has_timeline, launch.is_crewed ?? null
+    launch.ll2_status_id, launch.has_timeline, launch.is_crewed ?? null,
+    launch.webcast_live ?? null
   ).run()
 }
 
@@ -118,17 +149,31 @@ export function getActiveSubscriptionsForUser(db: D1Database, userId: string) {
   `).bind(userId).all<{ launch_id: string; name: string; provider: string | null }>()
 }
 
+export interface SubscriptionWithDeviceAndEvent extends SubscriptionWithDevice {
+  first_event_name: string | null
+  first_event_fire_at: number | null
+}
+
 export function getSubscriptionsForLaunch(db: D1Database, launchId: string) {
   return db.prepare(`
     SELECT s.*, ud.device_token, ud.push_to_start_token,
-           up.notify_net_change, up.notify_status_change, up.notify_terminal_status,
-           l.image_url, l.rocket_image_url
+           up.notify_net_change, up.notify_status_change, up.notify_terminal_status, up.notify_webcast_live,
+           s.webcast_notified, l.webcast_live,
+           l.image_url, l.rocket_image_url,
+           first_te.label   AS first_event_name,
+           first_te.fire_at AS first_event_fire_at
     FROM launch_subscriptions s
     JOIN user_devices ud ON ud.user_id = s.user_id
     JOIN launches l ON l.id = s.launch_id
     LEFT JOIN user_preferences up ON up.user_id = s.user_id
+    LEFT JOIN timeline_events first_te ON first_te.id = (
+      SELECT id FROM timeline_events
+      WHERE launch_id = ? AND fire_at > unixepoch()
+      ORDER BY fire_at ASC LIMIT 1
+    )
     WHERE s.launch_id = ?
-  `).bind(launchId).all<SubscriptionWithDevice>()
+      AND ud.pro_active = 1
+  `).bind(launchId, launchId).all<SubscriptionWithDeviceAndEvent>()
 }
 
 export function upsertSubscription(db: D1Database, sub: Pick<Subscription, 'launch_id' | 'user_id' | 'attributes_json'>) {
@@ -143,6 +188,10 @@ export function upsertSubscription(db: D1Database, sub: Pick<Subscription, 'laun
 // Fills attributes_json for any subscriptions to this launch that don't have it yet.
 // Used to support fan-out subscriptions that are created server-side without the iOS app context.
 // The JSON shape must match LaunchActivityAttributes (Codable, camelCase keys).
+/// Writes (or refreshes) attributes_json for all subscriptions to this launch.
+/// Always overwrites so that changes to provider logos, mission patches, or landing info
+/// are reflected in future push-to-start payloads — not just initial fan-out.
+/// Field names must exactly match LaunchActivityAttributes (Codable, camelCase keys).
 export function backfillAttributesJson(
   db: D1Database,
   launchId: string,
@@ -150,8 +199,13 @@ export function backfillAttributesJson(
   missionName: string | null,
   rocket: string | null,
   provider: string | null,
-  providerLogoUrl: string | null,
+  nationUrl: string | null,           // social_logo ?? logo_url — used as provider icon in Live Activity
   statusId: number,
+  missionPatchUrl: string | null,
+  landingLocation: string | null,
+  landingTypeId: number | null,
+  landingSuccess: boolean | null,
+  providerId: number | null,
 ) {
   const rocketAndProvider = [rocket, provider].filter(Boolean).join(' | ') || null
   const attrs = JSON.stringify({
@@ -159,16 +213,16 @@ export function backfillAttributesJson(
     missionName: missionName ?? name,
     rocketAndProvider,
     statusId,
-    logoUrl: providerLogoUrl,
-    landingLocation: null,
-    landingTypeId: null,
-    landingSuccess: null,
-    nationUrl: null,
-    missionPatchUrl: null,
+    nationUrl,
+    missionPatchUrl,
+    landingLocation,
+    landingTypeId,
+    landingSuccess,
+    providerId,
   })
   return db.prepare(`
     UPDATE launch_subscriptions SET attributes_json = ?
-    WHERE launch_id = ? AND attributes_json IS NULL
+    WHERE launch_id = ?
   `).bind(attrs, launchId).run()
 }
 
@@ -179,8 +233,8 @@ export function deleteSubscription(db: D1Database, userId: string, launchId: str
 
 export function upsertUserDevice(db: D1Database, userId: string, deviceToken: string, pushToStartToken?: string | null) {
   return db.prepare(`
-    INSERT INTO user_devices (user_id, device_token, push_to_start_token, updated_at)
-    VALUES (?, ?, ?, unixepoch())
+    INSERT INTO user_devices (user_id, device_token, push_to_start_token, pro_active, updated_at)
+    VALUES (?, ?, ?, 0, unixepoch())
     ON CONFLICT(user_id) DO UPDATE SET
       device_token = excluded.device_token,
       push_to_start_token = COALESCE(excluded.push_to_start_token, push_to_start_token),
@@ -238,6 +292,7 @@ export function fanOutExistingLaunchesToFeedSubscription(
     LEFT JOIN launch_opt_outs lo ON lo.user_id = ? AND lo.launch_id = l.id
     WHERE l.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
       AND lo.launch_id IS NULL
+      AND (l.t0 IS NULL OR l.t0 <= unixepoch() + 30 * 24 * 3600)
       ${filterClause}
       ${crewedClause}
   `
@@ -535,6 +590,7 @@ export function getSubscriptionsNeedingStart(db: D1Database, now: number) {
       ORDER BY fire_at ASC LIMIT 1
     )
     WHERE ud.push_to_start_token IS NOT NULL
+      AND ud.pro_active = 1
       AND s.attributes_json IS NOT NULL
       AND s.start_dispatched = 0
       AND s.activity_token IS NULL  -- skip if user already has a running Live Activity
@@ -542,11 +598,18 @@ export function getSubscriptionsNeedingStart(db: D1Database, now: number) {
       AND l.t0 IS NOT NULL
       AND COALESCE(up.auto_live_activity, 1) = 1
       AND l.t0 <= ? + COALESCE(up.live_activity_window, 3600)
-  `).bind(now).all<SubscriptionWithDevice & { launch_name: string; t0: number; window_start: number | null; window_end: number | null; ll2_status_id: number; first_event_name: string | null; first_event_fire_at: number | null }>()
+      AND (s.start_dispatched_at IS NULL OR s.start_dispatched_at <= ? - 600)
+      AND s.user_id = (
+        SELECT ud2.user_id FROM user_devices ud2
+        WHERE ud2.device_token = ud.device_token
+        ORDER BY ud2.updated_at DESC
+        LIMIT 1
+      )
+  `).bind(now, now).all<SubscriptionWithDevice & { launch_name: string; t0: number; window_start: number | null; window_end: number | null; ll2_status_id: number; first_event_name: string | null; first_event_fire_at: number | null }>()
 }
 
 export function markStartDispatched(db: D1Database, subscriptionId: string) {
-  return db.prepare('UPDATE launch_subscriptions SET start_dispatched = 1 WHERE id = ?')
+  return db.prepare('UPDATE launch_subscriptions SET start_dispatched = 1, start_dispatched_at = unixepoch() WHERE id = ?')
     .bind(subscriptionId).run()
 }
 
@@ -559,10 +622,12 @@ export function markSuccessAt(db: D1Database, launchId: string, successAt: numbe
 export function getLaunchesNeedingEnd(db: D1Database, now: number) {
   return db.prepare(`
     SELECT * FROM launches
-    WHERE success_at IS NOT NULL
-      AND end_dispatched = 0
-      AND success_at + 1800 <= ?
-  `).bind(now).all<Launch>()
+    WHERE end_dispatched = 0
+      AND (
+        (success_at IS NOT NULL AND success_at + 1800 <= ?)
+        OR (t0 IS NOT NULL AND t0 + 14400 <= ?)
+      )
+  `).bind(now, now).all<Launch>()
 }
 
 export function markEndDispatched(db: D1Database, launchId: string) {
@@ -631,10 +696,15 @@ export function markTransitionSent(db: D1Database, eventId: string) {
 
 export function getSubscribedLaunchIds(db: D1Database) {
   return db.prepare(`
-    SELECT DISTINCT launch_id FROM launch_subscriptions
+    SELECT
+      launch_id,
+      launches.t0,
+      MAX(CASE WHEN attributes_json IS NOT NULL THEN 1 ELSE 0 END) AS has_direct_sub
+    FROM launch_subscriptions
     JOIN launches ON launches.id = launch_subscriptions.launch_id
     WHERE launches.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
-  `).all<{ launch_id: string }>()
+    GROUP BY launch_id, launches.t0
+  `).all<{ launch_id: string; t0: number | null; has_direct_sub: number }>()
 }
 
 export function getSubscriptionsNeedingReminder(
@@ -683,6 +753,7 @@ export interface UserPreferences {
   event_remind_24h: number
   event_remind_1h: number
   event_remind_10m: number
+  notify_webcast_live: number
 }
 
 export function getUserPreferences(db: D1Database, userId: string) {
@@ -703,6 +774,7 @@ export function upsertUserPreferences(
   eventRemind24h: boolean,
   eventRemind1h: boolean,
   eventRemind10m: boolean,
+  notifyWebcastLive: boolean,
 ) {
   return db.prepare(`
     INSERT INTO user_preferences
@@ -710,8 +782,9 @@ export function upsertUserPreferences(
        notify_net_change, notify_status_change, notify_terminal_status,
        auto_live_activity, live_activity_window,
        event_remind_24h, event_remind_1h, event_remind_10m,
+       notify_webcast_live,
        updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(user_id) DO UPDATE SET
       remind_24h = excluded.remind_24h,
       remind_1h = excluded.remind_1h,
@@ -724,6 +797,7 @@ export function upsertUserPreferences(
       event_remind_24h = excluded.event_remind_24h,
       event_remind_1h = excluded.event_remind_1h,
       event_remind_10m = excluded.event_remind_10m,
+      notify_webcast_live = excluded.notify_webcast_live,
       updated_at = unixepoch()
   `).bind(
     userId,
@@ -731,7 +805,13 @@ export function upsertUserPreferences(
     notifyNetChange ? 1 : 0, notifyStatusChange ? 1 : 0, notifyTerminalStatus ? 1 : 0,
     autoLiveActivity ? 1 : 0, liveActivityWindow,
     eventRemind24h ? 1 : 0, eventRemind1h ? 1 : 0, eventRemind10m ? 1 : 0,
+    notifyWebcastLive ? 1 : 0,
   ).run()
+}
+
+export function markWebcastNotified(db: D1Database, subscriptionId: string) {
+  return db.prepare('UPDATE launch_subscriptions SET webcast_notified = 1 WHERE id = ?')
+    .bind(subscriptionId).run()
 }
 
 
@@ -745,6 +825,7 @@ export function fanOutAllUpcomingSubscriptions(db: D1Database, launchId: string)
     LEFT JOIN launch_opt_outs lo ON lo.user_id = fs.user_id AND lo.launch_id = ?
     WHERE fs.all_upcoming = 1 AND fs.section_type = 'launches' AND lo.launch_id IS NULL
       AND (fs.crewed_only IS NULL OR l.is_crewed IS NULL OR fs.crewed_only = l.is_crewed)
+      AND (l.t0 IS NULL OR l.t0 <= unixepoch() + 30 * 24 * 3600)
   `).bind(launchId, launchId, launchId).run()
 }
 
@@ -757,6 +838,11 @@ export function insertLaunchOptOut(db: D1Database, userId: string, launchId: str
 export function deleteLaunchOptOut(db: D1Database, userId: string, launchId: string) {
   return db.prepare('DELETE FROM launch_opt_outs WHERE user_id = ? AND launch_id = ?')
     .bind(userId, launchId).run()
+}
+
+export function getOptedOutLaunchIds(db: D1Database, userId: string) {
+  return db.prepare('SELECT launch_id FROM launch_opt_outs WHERE user_id = ?')
+    .bind(userId).all<{ launch_id: string }>()
 }
 
 /**
@@ -831,6 +917,58 @@ export function getLaunchesNearT0(db: D1Database, fromTs: number, toTs: number) 
   `).bind(fromTs, toTs).all<{ id: string }>()
 }
 
+/// Replaces two getLaunchesNearT0 calls with one query covering both windows.
+/// Combines the reminder window (next 5 min) and liftoff window (±90s of T-0).
+export function getLaunchesNearT0Combined(db: D1Database, now: number) {
+  return db.prepare(`
+    SELECT DISTINCT l.id
+    FROM launches l
+    JOIN launch_subscriptions s ON s.launch_id = l.id
+    WHERE l.t0 BETWEEN ? AND ?
+      AND l.ll2_status_id NOT IN (${TERMINAL_IDS.join(',')})
+  `).bind(now - 30, now + 5 * 60).all<{ id: string }>()
+}
+
+type ReminderRow = {
+  id: string; device_token: string; launch_id: string; user_id: string
+  launch_name: string; t0: number; rocket: string
+  image_url: string | null; rocket_image_url: string | null
+  window_label: '24h' | '1h' | '10m'
+}
+
+/// Replaces three separate getSubscriptionsNeedingReminder calls with a single UNION ALL.
+/// Returns all due reminders across all three windows in one D1 round-trip.
+export function getAllDueReminders(db: D1Database, now: number) {
+  const toleranceS = 90
+  const from24h = now + 24 * 3600;     const to24h = from24h + toleranceS
+  const from1h  = now + 3600;           const to1h  = from1h  + toleranceS
+  const from10m = now + 10 * 60;        const to10m = from10m + toleranceS
+
+  const baseSelect = (subCol: string, prefCol: string, label: string) => `
+    SELECT s.id, ud.device_token, s.launch_id, s.user_id, l.name as launch_name, l.t0, l.rocket,
+           l.image_url, l.rocket_image_url, '${label}' as window_label
+    FROM launch_subscriptions s
+    JOIN user_devices ud ON ud.user_id = s.user_id
+    JOIN launches l ON l.id = s.launch_id
+    LEFT JOIN user_preferences up ON up.user_id = s.user_id
+    WHERE s.${subCol} = 0
+      AND ud.pro_active = 1
+      AND (up.${prefCol} IS NULL OR up.${prefCol} = 1)
+      AND l.ll2_status_id IN (${CONFIRMED_GO_IDS.join(',')})
+      AND l.t0 IS NOT NULL
+      AND l.t0 > ? AND l.t0 <= ?`
+
+  const sql = [
+    baseSelect('reminded_24h', 'remind_24h', '24h'),
+    baseSelect('reminded_1h',  'remind_1h',  '1h'),
+    baseSelect('reminded_10m', 'remind_10m', '10m'),
+  ].join('\nUNION ALL\n')
+
+  return (db.prepare(sql) as D1PreparedStatement)
+    .bind(from24h, to24h, from1h, to1h, from10m, to10m)
+    .all<ReminderRow>()
+}
+
 export function upsertTimelineEvents(db: D1Database, launchId: string, events: Array<{ label: string; t_offset_s: number }>, t0: number) {
   const stmts = events.map(e =>
     db.prepare(`
@@ -859,6 +997,7 @@ export function getUsersForNewsSource(db: D1Database, source: string): Promise<{
     FROM feed_subscriptions fs
     JOIN user_devices ud ON ud.user_id = fs.user_id
     WHERE fs.section_type = 'news'
+      AND ud.pro_active = 1
       AND (
         NOT EXISTS (SELECT 1 FROM feed_subscription_news_sources WHERE user_id = fs.user_id AND feed_id = fs.feed_id)
         OR EXISTS (SELECT 1 FROM feed_subscription_news_sources WHERE user_id = fs.user_id AND feed_id = fs.feed_id AND source = ?)
@@ -1004,6 +1143,7 @@ export function getUsersForEventType(
     JOIN user_devices ud ON ud.user_id = fs.user_id
     LEFT JOIN user_preferences up ON up.user_id = fs.user_id
     WHERE fs.section_type = 'events'
+      AND ud.pro_active = 1
       ${typeFilter}
       AND (up.${prefCol} IS NULL OR up.${prefCol} = 1)
   `).all<{ user_id: string; device_token: string }>()
@@ -1052,6 +1192,7 @@ export function getUsersForAstronautAgency(db: D1Database, agencyId: number | nu
       FROM feed_subscriptions fs
       JOIN user_devices ud ON ud.user_id = fs.user_id
       WHERE fs.section_type = 'astronauts'
+        AND ud.pro_active = 1
         AND NOT EXISTS (
           SELECT 1 FROM feed_subscription_astronaut_agencies
           WHERE user_id = fs.user_id AND feed_id = fs.feed_id
@@ -1063,9 +1204,83 @@ export function getUsersForAstronautAgency(db: D1Database, agencyId: number | nu
     FROM feed_subscriptions fs
     JOIN user_devices ud ON ud.user_id = fs.user_id
     WHERE fs.section_type = 'astronauts'
+      AND ud.pro_active = 1
       AND (
         NOT EXISTS (SELECT 1 FROM feed_subscription_astronaut_agencies WHERE user_id = fs.user_id AND feed_id = fs.feed_id)
         OR EXISTS (SELECT 1 FROM feed_subscription_astronaut_agencies WHERE user_id = fs.user_id AND feed_id = fs.feed_id AND agency_id = ?)
       )
   `).bind(agencyId).all<{ user_id: string; device_token: string }>()
+}
+
+// --- Pro subscription queries ---
+
+/** Stores the originalTransactionId on this device and flips pro_active for it.
+ *  Step 1 of the two-step update — call setProActiveByTransactionId next to cover all devices. */
+export function setProActiveForDevice(
+  db: D1Database,
+  userId: string,
+  active: boolean,
+  originalTransactionId: string,
+) {
+  return db.prepare(`
+    UPDATE user_devices
+    SET pro_active = ?, original_transaction_id = ?
+    WHERE user_id = ?
+  `).bind(active ? 1 : 0, originalTransactionId, userId).run()
+}
+
+/** Flips pro_active for EVERY device that shares this originalTransactionId.
+ *  Covers multi-device users (e.g. iPhone + iPad on the same Apple Account).
+ *  Used by both the app-driven path and the App Store Server Notifications webhook. */
+export function setProActiveByTransactionId(
+  db: D1Database,
+  originalTransactionId: string,
+  active: boolean,
+) {
+  return db.prepare(`
+    UPDATE user_devices SET pro_active = ? WHERE original_transaction_id = ?
+  `).bind(active ? 1 : 0, originalTransactionId).run()
+}
+
+/** Fallback: flips pro_active for a single device when no originalTransactionId is available
+ *  (e.g. the user has never subscribed on this device). */
+export function setProActiveForUserOnly(db: D1Database, userId: string, active: boolean) {
+  return db.prepare(`
+    UPDATE user_devices SET pro_active = ? WHERE user_id = ?
+  `).bind(active ? 1 : 0, userId).run()
+}
+
+/** Returns all user_ids sharing an originalTransactionId (i.e. all devices on the same Apple Account).
+ *  Used to end Live Activities across all a user's devices on cancellation. */
+export function getUserIdsByTransactionId(db: D1Database, originalTransactionId: string) {
+  return db.prepare(`
+    SELECT user_id FROM user_devices WHERE original_transaction_id = ?
+  `).bind(originalTransactionId).all<{ user_id: string }>()
+}
+
+/** Returns user_id + device_token for all devices sharing an originalTransactionId.
+ *  Used to fan out a silent "pro status changed" push to every device on the same Apple Account. */
+export function getDeviceTokensByTransactionId(db: D1Database, originalTransactionId: string) {
+  return db.prepare(`
+    SELECT user_id, device_token FROM user_devices WHERE original_transaction_id = ?
+  `).bind(originalTransactionId).all<{ user_id: string; device_token: string }>()
+}
+
+/** Returns active Live Activity tokens for a user so we can send an end event on cancellation. */
+export function getActiveActivityTokensForUser(db: D1Database, userId: string) {
+  return db.prepare(`
+    SELECT s.id, s.launch_id, s.activity_token, l.t0, l.window_start, l.window_end, l.ll2_status_id
+    FROM launch_subscriptions s
+    JOIN launches l ON l.id = s.launch_id
+    WHERE s.user_id = ?
+      AND s.activity_token IS NOT NULL
+  `).bind(userId).all<{
+    id: string
+    launch_id: string
+    activity_token: string
+    t0: number | null
+    window_start: number | null
+    window_end: number | null
+    ll2_status_id: number
+  }>()
 }

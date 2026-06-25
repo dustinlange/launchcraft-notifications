@@ -12,11 +12,28 @@ export interface LL2Launch {
   window_end: string | null
   status: { id: number; abbrev: string }
   image: { image_url: string } | null
-  rocket: { configuration: { name: string; image: { image_url: string } | null } }
+  rocket: {
+    configuration: { name: string; image: { image_url: string } | null }
+    launcher_stage: Array<{
+      landing: {
+        success: boolean | null
+        landing_location: { abbrev: string } | null
+        type: { id: number } | null
+      } | null
+    }> | null
+  }
   pad: { name: string; location: { id: number; name: string } }
-  launch_service_provider: { id: number; name: string; logo_url: string | null } | null
+  launch_service_provider: {
+    id: number
+    name: string
+    logo_url: string | null   // deprecated in LL2 v2.3.0 — usually null; use logo.image_url as fallback
+    logo: { id: number; name: string; image_url: string } | null
+    social_logo: { id: number; name: string; image_url: string } | null  // square icon for Live Activity
+  } | null
   mission: { name: string; description: string; is_crewed: boolean } | null
+  mission_patches: Array<{ priority: number; image_url: string }> | null
   timeline: LL2TimelineEvent[] | null
+  webcast_live: boolean | null
 }
 
 export interface LL2TimelineEvent {

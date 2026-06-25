@@ -1,8 +1,9 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertLaunchesFeedSubscription, upsertEventsFeedSubscription, upsertNewsFeedSubscription, upsertAstronautsFeedSubscription, deleteFeedSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForFeedSubscription, getUserPreferences, fanOutExistingLaunchesToFeedSubscription } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertLaunchesFeedSubscription, upsertEventsFeedSubscription, upsertNewsFeedSubscription, upsertAstronautsFeedSubscription, deleteFeedSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForFeedSubscription, getUserPreferences, fanOutExistingLaunchesToFeedSubscription, CONFIRMED_GO_IDS } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
+import { pushLiveActivityUpdate } from '../apns'
 import { getApnsConfig } from './webhook'
 
 const DEFAULT_START_WINDOW_S = 60 * 60  // fallback: send push-to-start if T-0 is within 1 hour
@@ -51,6 +52,7 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     window_end: null,
     ll2_status_id: launch.ll2StatusId,
     has_timeline: hasTimeline ? 1 : 0,
+    webcast_live: null,
     success_at: null,
     end_dispatched: 0,
   })
@@ -59,27 +61,29 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
     await upsertTimelineEvents(c.env.DB, launch.id, launch.timeline, launch.t0)
   }
 
-  // If this device token is already registered under a different user ID (e.g. after a
-  // reinstall that cleared UserDefaults and generated a new UUID), migrate all subscriptions
-  // from the old user ID to the new one so the user doesn't accumulate duplicate records.
-  const existingDevice = await c.env.DB.prepare(
+  // If this device token is already registered under different user IDs (e.g. after one or
+  // more reinstalls that cleared UserDefaults and generated a new UUID), migrate all
+  // subscriptions from every stale user ID to the current one in a single batch.
+  // Previously used .first() which only caught one stale ID per call — if the device had
+  // been reinstalled multiple times, multiple stale IDs accumulated and each one triggered
+  // a separate push-to-start, resulting in duplicate Live Activities.
+  const { results: staleDevices } = await c.env.DB.prepare(
     'SELECT user_id FROM user_devices WHERE device_token = ? AND user_id != ?'
-  ).bind(deviceToken, userId).first<{ user_id: string }>()
+  ).bind(deviceToken, userId).all<{ user_id: string }>()
 
-  if (existingDevice) {
-    const oldUserId = existingDevice.user_id
-    console.log(`register: merging old user ${oldUserId} into ${userId} (same device token)`)
-    await c.env.DB.batch([
-      // Re-home subscriptions that don't already exist under the new user ID
+  if (staleDevices.length > 0) {
+    console.log(`register: merging ${staleDevices.length} stale user(s) into ${userId} (same device token)`)
+    const statements = staleDevices.flatMap(({ user_id: oldUserId }) => [
       c.env.DB.prepare(`
-        INSERT OR IGNORE INTO launch_subscriptions (id, launch_id, user_id, activity_token, activity_id, attributes_json, start_dispatched, reminded_24h, reminded_1h, reminded_10m, created_at)
-        SELECT id, launch_id, ?, activity_token, activity_id, attributes_json, start_dispatched, reminded_24h, reminded_1h, reminded_10m, created_at
+        INSERT OR IGNORE INTO launch_subscriptions (id, launch_id, user_id, activity_token, activity_id, attributes_json, start_dispatched, start_dispatched_at, reminded_24h, reminded_1h, reminded_10m, created_at)
+        SELECT id, launch_id, ?, activity_token, activity_id, attributes_json, start_dispatched, start_dispatched_at, reminded_24h, reminded_1h, reminded_10m, created_at
         FROM launch_subscriptions WHERE user_id = ?
       `).bind(userId, oldUserId),
       c.env.DB.prepare('DELETE FROM launch_subscriptions WHERE user_id = ?').bind(oldUserId),
       c.env.DB.prepare('DELETE FROM user_devices WHERE user_id = ?').bind(oldUserId),
       c.env.DB.prepare('DELETE FROM user_preferences WHERE user_id = ?').bind(oldUserId),
     ])
+    await c.env.DB.batch(statements)
   }
 
   await upsertUserDevice(c.env.DB, userId, deviceToken, pushToStartToken ?? null)
@@ -113,6 +117,7 @@ export async function handleRegister(c: Context<{ Bindings: Env }>) {
           nextEventName: null,
           nextEventDate: null,
           statusId: launch.ll2StatusId,
+          isWebcastLive: false,
         }, launch.name)
       }
     })())
@@ -140,6 +145,37 @@ export async function handleActivityToken(c: Context<{ Bindings: Env }>) {
   if (!launch) return c.json({ error: 'launch not found' }, 404)
 
   await updateActivityToken(c.env.DB, userId, launchId, activityToken, activityId)
+
+  // Immediately push the current launch state to the newly registered activity token.
+  // This catches missed NET-change updates: the poll may have detected a T-0 shift and
+  // updated the DB before this token existed in the DB, so no push was sent at that time.
+  // Future polls won't retry (t0Changed = false), so we must push on token registration.
+  if ((CONFIRMED_GO_IDS as number[]).includes(launch.ll2_status_id) && launch.t0) {
+    c.executionCtx.waitUntil((async () => {
+      const now = Math.floor(Date.now() / 1000)
+      const firstEvent = await c.env.DB.prepare(`
+        SELECT label, fire_at FROM timeline_events
+        WHERE launch_id = ? AND fire_at > ?
+        ORDER BY fire_at ASC LIMIT 1
+      `).bind(launchId, now).first<{ label: string; fire_at: number }>()
+
+      const apnsConfig = getApnsConfig(c.env)
+      await pushLiveActivityUpdate(c.env.KV, apnsConfig, activityToken, {
+        event: 'update',
+        contentState: {
+          netDate: launch.t0,
+          windowStart: launch.window_start,
+          windowEnd: launch.window_end,
+          currentEventName: null,
+          currentEventDate: null,
+          nextEventName: firstEvent?.label ?? null,
+          nextEventDate: firstEvent?.fire_at ?? null,
+          statusId: launch.ll2_status_id,
+          isWebcastLive: (launch.webcast_live ?? 0) === 1,
+        },
+      })
+    })())
+  }
 
   return c.json({ ok: true })
 }
@@ -373,6 +409,7 @@ export async function sendPushToStart(
     nextEventName: string | null
     nextEventDate: number | null
     statusId: number
+    isWebcastLive: boolean
   },
   launchName: string
 ) {
@@ -380,7 +417,7 @@ export async function sendPushToStart(
     // Atomically claim the subscription before sending — prevents duplicate pushes
     // from concurrent cron invocations or simultaneous /register calls.
     const claim = await env.DB.prepare(
-      'UPDATE launch_subscriptions SET start_dispatched = 1 WHERE user_id = ? AND launch_id = ? AND start_dispatched = 0'
+      'UPDATE launch_subscriptions SET start_dispatched = 1, start_dispatched_at = unixepoch() WHERE user_id = ? AND launch_id = ? AND start_dispatched = 0'
     ).bind(userId, launchId).run()
     if (claim.meta.changes === 0) return
 
@@ -393,7 +430,6 @@ export async function sendPushToStart(
       alertTitle: launchName,
       alertBody: 'Live Activity started',
       dismissalDate: now + 8 * 60 * 60,
-      staleDate: contentState.netDate ? contentState.netDate + 30 * 60 : undefined,
     })
 
     if (!result.ok) {

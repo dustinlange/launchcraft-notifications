@@ -27,6 +27,7 @@ export async function dispatchActivityStarts(env: Env) {
         nextEventName: sub.first_event_name ?? null,
         nextEventDate: sub.first_event_fire_at ?? null,
         statusId: sub.ll2_status_id,
+        isWebcastLive: false,
       },
       sub.launch_name
     )
@@ -43,6 +44,11 @@ export async function dispatchActivityStarts(env: Env) {
 export async function detectSilentPushToStartFailures(env: Env) {
   const now = Math.floor(Date.now() / 1000)
   const staleWindowS = 5 * 60 // 5 minutes past T0 — enough time for the activity token to arrive
+  // Only consider subscriptions whose push-to-start was sent at least 10 minutes ago.
+  // Without this cooldown, the retry loop resets start_dispatched every cron cycle (1 min)
+  // before iOS has a chance to start the activity and the app registers the activity_token,
+  // causing a new push-to-start each minute → multiple live activities on the same device.
+  const retryAfterS = 10 * 60
   const { results } = await env.DB.prepare(`
     SELECT s.id, s.user_id, s.launch_id, l.name as launch_name, l.t0, ud.push_to_start_token
     FROM launch_subscriptions s
@@ -53,11 +59,20 @@ export async function detectSilentPushToStartFailures(env: Env) {
       AND l.t0 IS NOT NULL
       AND l.end_dispatched = 0
       AND ud.push_to_start_token IS NOT NULL
-  `).bind().all<{ id: string; user_id: string; launch_id: string; launch_name: string; t0: number; push_to_start_token: string }>()
+      AND (s.start_dispatched_at IS NULL OR s.start_dispatched_at <= ? - ?)
+  `).bind(now, retryAfterS).all<{ id: string; user_id: string; launch_id: string; launch_name: string; t0: number; push_to_start_token: string }>()
 
   for (const sub of results) {
     if (sub.t0 > now) {
-      // Launch hasn't happened yet — reset so the cron retries the push-to-start
+      // Launch hasn't happened yet. Only retry if T-0 is within 30 minutes — if we're
+      // further out the activity is almost certainly running; the iOS app just hasn't
+      // registered the token yet (e.g. push-to-start fired while the app was already open
+      // and the AppDelegate snapshot missed it). Retrying early creates duplicate activities.
+      const thirtyMinS = 30 * 60
+      if (sub.t0 - now > thirtyMinS) {
+        console.log(`[push-to-start] activity token not yet registered for ${sub.launch_id}/${sub.user_id}, T-0 still ${Math.round((sub.t0 - now) / 60)}m away — skipping retry`)
+        continue
+      }
       console.warn(`[push-to-start] pre-launch silent failure for ${sub.launch_id}/${sub.user_id} — resetting start_dispatched to retry`)
       await env.DB.prepare(
         'UPDATE launch_subscriptions SET start_dispatched = 0 WHERE id = ?'
@@ -95,6 +110,7 @@ export async function dispatchActivityEnds(env: Env) {
           nextEventName: null,
           nextEventDate: null,
           statusId: launch.ll2_status_id,
+          isWebcastLive: (launch.webcast_live ?? 0) === 1,
         },
         dismissalDate: now + 60 * 30,  // 30 min from now — must be in the future
       })

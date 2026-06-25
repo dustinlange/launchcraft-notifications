@@ -40,11 +40,22 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
 
   if (articles.length === 0) return
 
+  // Pre-filter articles already in the dispatch log with a single bulk query.
+  // Avoids 50 individual INSERT OR IGNORE attempts when most articles are already dispatched.
+  const ids = articles.map(a => a.id)
+  const placeholders = ids.map(() => '?').join(', ')
+  const { results: alreadyDispatched } = await env.DB.prepare(
+    `SELECT article_id FROM news_dispatch_log WHERE article_id IN (${placeholders})`
+  ).bind(...ids).all<{ article_id: number }>()
+  const dispatchedSet = new Set(alreadyDispatched.map(r => r.article_id))
+  const newArticles = articles.filter(a => !dispatchedSet.has(a.id))
+
+  if (newArticles.length === 0) return
+
   const apnsConfig = getApnsConfig(env)
 
-  for (const article of articles) {
-    // Atomically claim this article — if another Worker instance beat us to it, skip.
-    // This prevents duplicate notifications when concurrent cron executions overlap.
+  for (const article of newArticles) {
+    // Atomically claim — guards against concurrent Worker instances
     const claimed = await claimArticleForDispatch(env.DB, article.id)
     if (!claimed) continue
 

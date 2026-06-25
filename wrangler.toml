@@ -12,6 +12,9 @@ database_id = "27390ed7-f70f-42ec-8e9f-29c5131693e1"  # after: wrangler d1 creat
 binding = "KV"
 id = "17e1e9861c804bb1981e032cbba12eb1"           # after: wrangler kv namespace create launchcraft-kv
 
+[limits]
+cpu_ms = 60000
+
 # Runs every minute — dispatches due timeline events
 [triggers]
 crons = ["* * * * *"]

@@ -12,14 +12,19 @@ CREATE TABLE IF NOT EXISTS launches (
   window_end    INTEGER,            -- launch window close (unix timestamp)
   provider      TEXT,                         -- launch service provider name e.g. "SpaceX"
   provider_id   INTEGER,                      -- LL2 agency ID; stable foreign key for subscriptions
-  provider_logo_url  TEXT,                    -- LL2 agency logo image URL
+  provider_logo_url        TEXT,              -- LL2 agency logo image URL
+  provider_social_logo_url TEXT,              -- LL2 agency square/social icon (used as nationUrl in Live Activity)
   image_url          TEXT,                    -- LL2 launch image URL
   rocket_image_url   TEXT,                    -- LL2 rocket configuration image URL (fallback)
+  mission_patch_url  TEXT,                    -- highest-priority mission patch image URL
+  landing_location   TEXT,                    -- first stage landing location abbrev e.g. "OCISLY", "LZ-1"
+  landing_type_id    INTEGER,                 -- first stage landing type ID (1=ASDS drone ship, 2=RTLS etc.)
   ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
   has_timeline     INTEGER NOT NULL DEFAULT 0,
   is_crewed        INTEGER,                     -- 1 = crewed mission, 0 = uncrewed, NULL = unknown
   success_at       INTEGER,                     -- unix timestamp when status first became 'success'
   end_dispatched   INTEGER NOT NULL DEFAULT 0,  -- 1 after end push sent ~30min post terminal status
+  webcast_live     INTEGER,                     -- 1 = webcast is currently live, 0/NULL = not live
   last_updated     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -58,6 +63,7 @@ CREATE TABLE IF NOT EXISTS launch_subscriptions (
   reminded_24h        INTEGER NOT NULL DEFAULT 0,
   reminded_1h         INTEGER NOT NULL DEFAULT 0,
   reminded_10m        INTEGER NOT NULL DEFAULT 0,
+  webcast_notified    INTEGER NOT NULL DEFAULT 0,  -- 1 after webcast-live push sent
   user_id             TEXT NOT NULL,
   created_at          INTEGER NOT NULL DEFAULT (unixepoch()),
   UNIQUE(launch_id, user_id)
@@ -89,6 +95,7 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   event_remind_24h         INTEGER NOT NULL DEFAULT 1,  -- event reminder 24h before (default on)
   event_remind_1h          INTEGER NOT NULL DEFAULT 1,  -- event reminder 1h before (default on)
   event_remind_10m         INTEGER NOT NULL DEFAULT 1,  -- event reminder 10m before (default on)
+  notify_webcast_live      INTEGER NOT NULL DEFAULT 1,  -- webcast goes live (default on)
   updated_at               INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -190,6 +197,26 @@ CREATE TABLE IF NOT EXISTS astronaut_status_snapshots (
   flights_count    INTEGER,
   entered_space_at INTEGER,                     -- unix timestamp of last 0→1 in_space transition
   last_checked     INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Server-managed list of For You feed presets shown in the template picker.
+-- Add/remove rows here (or via the D1 console) to update all app clients without a release.
+CREATE TABLE IF NOT EXISTS feed_templates (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  sort_order     INTEGER NOT NULL DEFAULT 0,
+  title          TEXT    NOT NULL,
+  logo_url       TEXT,                                    -- provider logo; shown as circle in top-left of card
+  section_type   TEXT    NOT NULL DEFAULT 'launches',    -- 'launches' | 'events' | 'news' | 'astronauts'
+  agency_ids     TEXT    NOT NULL DEFAULT '[]',           -- JSON int array  e.g. [121]
+  agency_names   TEXT    NOT NULL DEFAULT '[]',           -- JSON string array e.g. ["SpaceX"]
+  location_ids   TEXT    NOT NULL DEFAULT '[]',           -- JSON int array  e.g. [27]
+  location_names TEXT    NOT NULL DEFAULT '[]',           -- JSON string array e.g. ["Cape Canaveral, FL, USA"]
+  news_sources   TEXT    NOT NULL DEFAULT '[]',           -- JSON string array e.g. ["NASA"] (empty = all sources)
+  crewed_only    INTEGER,                                 -- NULL = all missions, 1 = crewed only, 0 = uncrewed only
+  in_space_only  INTEGER NOT NULL DEFAULT 0,
+  launch_layout  TEXT    NOT NULL DEFAULT 'list',         -- 'list' | 'card'
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  created_at     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE INDEX IF NOT EXISTS idx_timeline_fire ON timeline_events(fire_at, sent_at);

@@ -33,6 +33,7 @@ export async function pollNoTimelineLaunches(env: Env) {
           nextEventName: null,
           nextEventDate: null,
           statusId: launch.ll2_status_id,
+          isWebcastLive: (launch.webcast_live ?? 0) === 1,
         },
       })
     ))
