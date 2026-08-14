@@ -16,10 +16,10 @@ import { handleLL2Proxy } from './handlers/ll2-proxy'
 import { handleSNAPIProxy } from './handlers/snapi-proxy'
 import { handleProStatus } from './handlers/pro-status'
 import { handleGetFeedTemplates } from './handlers/feed-templates'
-import { handleGetWhatsNew, handleAdminUpsertWhatsNew, handleAdminListWhatsNew } from './handlers/whats-new'
 import { handleAppStoreNotification } from './handlers/appstore-notifications'
 import { handleAdminMetrics } from './handlers/admin-metrics'
 import { handleAppStoreAnalytics, refreshAppStoreData } from './handlers/app-store-analytics'
+import { handleListVersions, handleCreateVersion, handleDeleteVersion, handleListItems, handleCreateItem, handleUpdateItem, handleDeleteItem } from './handlers/whats-new'
 
 export interface Env {
   DB: D1Database
@@ -91,7 +91,7 @@ app.delete('/feed-subscription', handleUnsubscribeFromFeed)
 
 app.get('/feed-templates', handleGetFeedTemplates)
 app.get('/news-sources', handleGetNewsSources)
-app.get('/whats-new', handleGetWhatsNew)
+
 
 app.post('/pro-status', handleProStatus)
 app.post('/appstore-notification', handleAppStoreNotification)
@@ -119,8 +119,14 @@ app.use('/admin/*', async (c, next) => {
 })
 app.get('/admin/metrics', handleAdminMetrics)
 app.get('/admin/app-store', handleAppStoreAnalytics)
-app.get('/admin/whats-new', handleAdminListWhatsNew)
-app.put('/admin/whats-new', handleAdminUpsertWhatsNew)
+
+app.get('/admin/whats-new/versions', handleListVersions)
+app.post('/admin/whats-new/versions', handleCreateVersion)
+app.delete('/admin/whats-new/versions/:id', handleDeleteVersion)
+app.get('/admin/whats-new/versions/:id/items', handleListItems)
+app.post('/admin/whats-new/versions/:id/items', handleCreateItem)
+app.put('/admin/whats-new/items/:itemId', handleUpdateItem)
+app.delete('/admin/whats-new/items/:itemId', handleDeleteItem)
 
 export default {
   fetch: app.fetch,

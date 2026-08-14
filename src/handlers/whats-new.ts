@@ -1,122 +1,84 @@
-import type { Context } from 'hono'
-import type { Env } from '../index'
+import { Context } from 'hono'
+import { Env } from '../index'
 
-// Backs the app's "What's New" modal. The public GET is what the app calls on
-// launch; the admin routes are for editing the content without a deploy.
+interface VersionRow { id: number; version: string; title: string | null; released_at: number | null; created_at: number; item_count: number }
+interface ItemRow { id: number; version_id: number; type: string; title: string; body: string | null; sort_order: number; created_at: number; updated_at: number }
 
-interface WhatsNewRow {
-  version: string
-  title: string
-  items: string
-  enabled: number
-  updated_at: number
+function mapVersion(r: VersionRow) {
+  return { id: r.id, version: r.version, title: r.title, releasedAt: r.released_at, createdAt: r.created_at, itemCount: r.item_count }
 }
 
-export interface WhatsNewItem {
-  systemImage: string
-  title: string
-  description: string
+function mapItem(r: ItemRow) {
+  return { id: r.id, versionId: r.version_id, type: r.type, title: r.title, body: r.body, sortOrder: r.sort_order, createdAt: r.created_at, updatedAt: r.updated_at }
 }
 
-/// Parses the stored JSON blob, tolerating anything malformed by returning an
-/// empty list — a bad row shouldn't fail the request for every user on launch.
-function parseItems(raw: string): WhatsNewItem[] {
-  try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
+// ─── Versions ─────────────────────────────────────────────────────────────────
+
+export async function handleListVersions(c: Context<{ Bindings: Env }>) {
+  const { results } = await c.env.DB.prepare(`
+    SELECT v.id, v.version, v.title, v.released_at, v.created_at, COUNT(i.id) AS item_count
+    FROM whats_new_versions v
+    LEFT JOIN whats_new_items i ON i.version_id = v.id
+    GROUP BY v.id
+    ORDER BY v.created_at DESC
+  `).all<VersionRow>()
+  return c.json(results.map(mapVersion))
 }
 
-// GET /whats-new?version=2026.3
-// Returns { release: null } with a 200 when there's nothing for this version,
-// so "no notes this release" stays off the client's error path.
-export async function handleGetWhatsNew(c: Context<{ Bindings: Env }>) {
-  const version = c.req.query('version')
-  if (!version) return c.json({ error: 'missing version' }, 400)
+export async function handleCreateVersion(c: Context<{ Bindings: Env }>) {
+  const body = await c.req.json<{ version?: string; title?: string; releasedAt?: number }>()
+  if (!body.version?.trim()) return c.json({ error: 'version required' }, 400)
 
   const row = await c.env.DB.prepare(
-    'SELECT version, title, items, enabled, updated_at FROM whats_new WHERE version = ? AND enabled = 1'
-  ).bind(version).first<WhatsNewRow>()
+    'INSERT INTO whats_new_versions (version, title, released_at) VALUES (?, ?, ?) RETURNING *'
+  ).bind(body.version.trim(), body.title?.trim() || null, body.releasedAt ?? null).first<VersionRow & { item_count: 0 }>()
 
-  if (!row) return c.json({ release: null })
-
-  const items = parseItems(row.items)
-  if (items.length === 0) return c.json({ release: null })
-
-  return c.json({
-    release: {
-      version: row.version,
-      title: row.title,
-      items,
-    },
-  })
+  return c.json(mapVersion({ ...row!, item_count: 0 }), 201)
 }
 
-/// Validates an admin payload before it can reach every user on next launch.
-function validateItems(value: unknown): value is WhatsNewItem[] {
-  if (!Array.isArray(value) || value.length === 0) return false
-  return value.every(item =>
-    item !== null &&
-    typeof item === 'object' &&
-    typeof (item as WhatsNewItem).systemImage === 'string' &&
-    typeof (item as WhatsNewItem).title === 'string' &&
-    typeof (item as WhatsNewItem).description === 'string' &&
-    (item as WhatsNewItem).systemImage.length > 0 &&
-    (item as WhatsNewItem).title.length > 0
-  )
+export async function handleDeleteVersion(c: Context<{ Bindings: Env }>) {
+  await c.env.DB.prepare('DELETE FROM whats_new_versions WHERE id = ?').bind(Number(c.req.param('id'))).run()
+  return c.json({ ok: true })
 }
 
-// PUT /admin/whats-new
-export async function handleAdminUpsertWhatsNew(c: Context<{ Bindings: Env }>) {
-  let body: { version?: string; title?: string; items?: unknown; enabled?: boolean }
-  try {
-    body = await c.req.json()
-  } catch {
-    return c.json({ error: 'invalid json' }, 400)
-  }
+// ─── Items ─────────────────────────────────────────────────────────────────────
 
-  const { version, title, items, enabled } = body
+export async function handleListItems(c: Context<{ Bindings: Env }>) {
+  const { results } = await c.env.DB.prepare(
+    'SELECT * FROM whats_new_items WHERE version_id = ? ORDER BY sort_order ASC, created_at ASC'
+  ).bind(Number(c.req.param('id'))).all<ItemRow>()
+  return c.json(results.map(mapItem))
+}
 
-  if (!version || typeof version !== 'string') {
-    return c.json({ error: 'missing version' }, 400)
-  }
-  if (!validateItems(items)) {
-    return c.json({ error: 'items must be a non-empty array of { systemImage, title, description }' }, 400)
-  }
+export async function handleCreateItem(c: Context<{ Bindings: Env }>) {
+  const versionId = Number(c.req.param('id'))
+  const body = await c.req.json<{ type?: string; title?: string; body?: string }>()
+  if (!body.title?.trim()) return c.json({ error: 'title required' }, 400)
+
+  const maxRow = await c.env.DB.prepare(
+    'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM whats_new_items WHERE version_id = ?'
+  ).bind(versionId).first<{ next: number }>()
+
+  const row = await c.env.DB.prepare(
+    'INSERT INTO whats_new_items (version_id, type, title, body, sort_order) VALUES (?, ?, ?, ?, ?) RETURNING *'
+  ).bind(versionId, body.type ?? 'feature', body.title.trim(), body.body?.trim() || null, maxRow?.next ?? 0).first<ItemRow>()
+
+  return c.json(mapItem(row!), 201)
+}
+
+export async function handleUpdateItem(c: Context<{ Bindings: Env }>) {
+  const itemId = Number(c.req.param('itemId'))
+  const body = await c.req.json<{ type: string; title: string; body?: string | null; sortOrder?: number }>()
+  if (!body.title?.trim()) return c.json({ error: 'title required' }, 400)
 
   await c.env.DB.prepare(
-    `INSERT INTO whats_new (version, title, items, enabled, updated_at)
-     VALUES (?, ?, ?, ?, unixepoch())
-     ON CONFLICT(version) DO UPDATE SET
-       title      = excluded.title,
-       items      = excluded.items,
-       enabled    = excluded.enabled,
-       updated_at = unixepoch()`
-  ).bind(
-    version,
-    title ?? "What's New",
-    JSON.stringify(items),
-    enabled === false ? 0 : 1
-  ).run()
+    'UPDATE whats_new_items SET type = ?, title = ?, body = ?, updated_at = unixepoch() WHERE id = ?'
+  ).bind(body.type, body.title.trim(), body.body?.trim() || null, itemId).run()
 
-  return c.json({ ok: true, version })
+  return c.json({ ok: true })
 }
 
-// GET /admin/whats-new — every release, including disabled ones, for an editor UI.
-export async function handleAdminListWhatsNew(c: Context<{ Bindings: Env }>) {
-  const rows = await c.env.DB.prepare(
-    'SELECT version, title, items, enabled, updated_at FROM whats_new ORDER BY updated_at DESC'
-  ).all<WhatsNewRow>()
-
-  const releases = (rows.results ?? []).map(row => ({
-    version:   row.version,
-    title:     row.title,
-    items:     parseItems(row.items),
-    enabled:   row.enabled === 1,
-    updatedAt: row.updated_at,
-  }))
-
-  return c.json({ releases })
+export async function handleDeleteItem(c: Context<{ Bindings: Env }>) {
+  await c.env.DB.prepare('DELETE FROM whats_new_items WHERE id = ?').bind(Number(c.req.param('itemId'))).run()
+  return c.json({ ok: true })
 }
