@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getDueTimelineEvents, getDueTransitionEvents, getSubscriptionsForLaunch, markEventSent, markTransitionSent } from '../db/queries'
+import { getDueTimelineEvents, getDueTransitionEvents, getSubscriptionsForLaunch, markEventSent, markTransitionSent, logNotification } from '../db/queries'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 
@@ -29,8 +29,8 @@ export async function dispatchTimelineEvents(env: Env) {
       // currentEventDate is the absolute timestamp when this event fired
       const currentEventDate = event.fire_at ?? null
 
-      await Promise.allSettled(activeSubs.map(sub =>
-        pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
+      await Promise.allSettled(activeSubs.map(async sub => {
+        const result = await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
           event: 'update',
           contentState: {
             netDate: event.t0,
@@ -46,7 +46,8 @@ export async function dispatchTimelineEvents(env: Env) {
           alertTitle: event.launch_name,
           alertBody: event.label,
         })
-      ))
+        await logNotification(env.DB, 'live_activity_update', sub.user_id, result.ok)
+      }))
 
       await markEventSent(env.DB, event.id)
     }
@@ -62,8 +63,8 @@ export async function dispatchTimelineEvents(env: Env) {
     const { results: subs } = await getSubscriptionsForLaunch(env.DB, transition.launch_id)
     const activeSubs = subs.filter(s => s.activity_token)
 
-    await Promise.allSettled(activeSubs.map(sub =>
-      pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
+    await Promise.allSettled(activeSubs.map(async sub => {
+      const result = await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
         event: 'update',
         contentState: {
           netDate: transition.t0,
@@ -77,7 +78,8 @@ export async function dispatchTimelineEvents(env: Env) {
           isWebcastLive: (sub.webcast_live ?? 0) === 1,
         },
       })
-    ))
+      await logNotification(env.DB, 'live_activity_update', sub.user_id, result.ok)
+    }))
 
     await markTransitionSent(env.DB, transition.id)
   }))

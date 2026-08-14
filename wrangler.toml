@@ -24,3 +24,4 @@ crons = ["* * * * *"]
 # APNS_KEY_ID        — 10-char key ID from Apple Developer
 # APNS_TEAM_ID       — 10-char team ID from Apple Developer
 # WEBHOOK_SECRET     — shared secret for launch data webhooks
+# ADMIN_API_KEY      — gates /admin/* routes (MissionControl), separate from API_KEY

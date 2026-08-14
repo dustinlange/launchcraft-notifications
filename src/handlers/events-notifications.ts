@@ -6,6 +6,7 @@ import {
   pruneOldEventDispatchLog,
   getUsersForEventType,
   clearDeviceToken,
+  logNotification,
   EventWindowLabel,
 } from '../db/queries'
 import { pushAlertNotification, ApnsConfig } from '../apns'
@@ -112,6 +113,7 @@ export async function dispatchEventNotifications(env: Env): Promise<void> {
             eventId: e.id,
             imageUrl: e.feature_image ?? undefined,
           })
+          await logNotification(env.DB, 'event', u.user_id, result.ok)
           if (!result.ok && (result.status === 410 || result.status === 400)) {
             console.warn(`Clearing stale device token for ${u.user_id} after APNs ${result.status}`)
             await clearDeviceToken(env.DB, u.user_id, u.device_token)

@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getActiveNoTimelineLaunches, getSubscriptionsForLaunch } from '../db/queries'
+import { getActiveNoTimelineLaunches, getSubscriptionsForLaunch, logNotification } from '../db/queries'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 
@@ -21,8 +21,8 @@ export async function pollNoTimelineLaunches(env: Env) {
     // Only send a heartbeat if T-0 is within the next 24 hours
     if (!launch.t0 || launch.t0 - now > 24 * 60 * 60) return
 
-    await Promise.allSettled(activeSubs.map(sub =>
-      pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
+    await Promise.allSettled(activeSubs.map(async sub => {
+      const result = await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token!, {
         event: 'update',
         contentState: {
           netDate: launch.t0,
@@ -36,6 +36,7 @@ export async function pollNoTimelineLaunches(env: Env) {
           isWebcastLive: (launch.webcast_live ?? 0) === 1,
         },
       })
-    ))
+      await logNotification(env.DB, 'live_activity_update', sub.user_id, result.ok)
+    }))
   }))
 }

@@ -9,13 +9,14 @@ export const LL2_STATUS = {
   IN_FLIGHT: 6,
   PARTIAL_FAILURE: 7,
   TBC: 8,
+  PAYLOAD_DEPLOYED: 9,
 } as const
 
 // Statuses that mean "confirmed go" — eligible for push-to-start, reminders, timeline dispatch
 export const CONFIRMED_GO_IDS = [LL2_STATUS.GO, LL2_STATUS.IN_FLIGHT]
 
 // Terminal statuses — live activity should end, subscription is done
-export const TERMINAL_IDS = [LL2_STATUS.SUCCESS, LL2_STATUS.FAILURE, LL2_STATUS.PARTIAL_FAILURE]
+export const TERMINAL_IDS = [LL2_STATUS.SUCCESS, LL2_STATUS.FAILURE, LL2_STATUS.PARTIAL_FAILURE, LL2_STATUS.PAYLOAD_DEPLOYED]
 
 export interface Launch {
   id: string
@@ -34,6 +35,7 @@ export interface Launch {
   mission_patch_url: string | null
   landing_location: string | null
   landing_type_id: number | null
+  landing_success: number | null
   t0: number | null
   window_start: number | null
   window_end: number | null
@@ -73,6 +75,10 @@ export interface SubscriptionWithDevice extends Subscription {
   // Launch images for notification thumbnails
   image_url: string | null
   rocket_image_url: string | null
+  // Landing outcome
+  landing_location: string | null
+  landing_type_id: number | null
+  landing_success: number | null
 }
 
 export interface TimelineEvent {
@@ -102,8 +108,8 @@ export async function getLaunchesMap(db: D1Database, ids: string[]): Promise<Map
 
 export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'>) {
   return db.prepare(`
-    INSERT INTO launches (id, name, mission_name, rocket, pad, pad_location, pad_location_id, provider, provider_id, provider_logo_url, provider_social_logo_url, image_url, rocket_image_url, mission_patch_url, landing_location, landing_type_id, t0, window_start, window_end, ll2_status_id, has_timeline, is_crewed, webcast_live, last_updated)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    INSERT INTO launches (id, name, mission_name, rocket, pad, pad_location, pad_location_id, provider, provider_id, provider_logo_url, provider_social_logo_url, image_url, rocket_image_url, mission_patch_url, landing_location, landing_type_id, landing_success, t0, window_start, window_end, ll2_status_id, has_timeline, is_crewed, webcast_live, last_updated)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       mission_name = COALESCE(excluded.mission_name, mission_name),
@@ -119,6 +125,7 @@ export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'
       mission_patch_url = COALESCE(excluded.mission_patch_url, mission_patch_url),
       landing_location = COALESCE(excluded.landing_location, landing_location),
       landing_type_id = COALESCE(excluded.landing_type_id, landing_type_id),
+      landing_success = COALESCE(excluded.landing_success, landing_success),
       t0 = excluded.t0, window_start = excluded.window_start, window_end = excluded.window_end,
       ll2_status_id = excluded.ll2_status_id,
       has_timeline = excluded.has_timeline,
@@ -132,7 +139,7 @@ export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'
     launch.provider_social_logo_url ?? null,
     launch.image_url, launch.rocket_image_url,
     launch.mission_patch_url ?? null,
-    launch.landing_location ?? null, launch.landing_type_id ?? null,
+    launch.landing_location ?? null, launch.landing_type_id ?? null, launch.landing_success ?? null,
     launch.t0, launch.window_start, launch.window_end,
     launch.ll2_status_id, launch.has_timeline, launch.is_crewed ?? null,
     launch.webcast_live ?? null
@@ -160,6 +167,7 @@ export function getSubscriptionsForLaunch(db: D1Database, launchId: string) {
            up.notify_net_change, up.notify_status_change, up.notify_terminal_status, up.notify_webcast_live,
            s.webcast_notified, l.webcast_live,
            l.image_url, l.rocket_image_url,
+           l.landing_location, l.landing_type_id, l.landing_success,
            first_te.label   AS first_event_name,
            first_te.fire_at AS first_event_fire_at
     FROM launch_subscriptions s
@@ -1264,6 +1272,32 @@ export function getDeviceTokensByTransactionId(db: D1Database, originalTransacti
   return db.prepare(`
     SELECT user_id, device_token FROM user_devices WHERE original_transaction_id = ?
   `).bind(originalTransactionId).all<{ user_id: string; device_token: string }>()
+}
+
+// --- Notification instrumentation ---
+
+export type NotificationLogType =
+  | 'live_activity_start'
+  | 'live_activity_update'
+  | 'live_activity_end'
+  | 'reminder'
+  | 'news'
+  | 'event'
+  | 'status_change'
+  | 'schedule_change'
+  | 'astronaut_status'
+  | 'pro_status_refresh'
+
+/** Records one outbound APNs send attempt (success or failure). Fire-and-forget from call sites. */
+export function logNotification(
+  db: D1Database,
+  type: NotificationLogType,
+  userId: string | null,
+  success: boolean,
+) {
+  return db.prepare(
+    'INSERT INTO notification_log (type, user_id, success) VALUES (?, ?, ?)'
+  ).bind(type, userId, success ? 1 : 0).run()
 }
 
 /** Returns active Live Activity tokens for a user so we can send an end event on cancellation. */

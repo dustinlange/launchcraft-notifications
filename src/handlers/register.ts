@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertLaunchesFeedSubscription, upsertEventsFeedSubscription, upsertNewsFeedSubscription, upsertAstronautsFeedSubscription, deleteFeedSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForFeedSubscription, getUserPreferences, fanOutExistingLaunchesToFeedSubscription, CONFIRMED_GO_IDS } from '../db/queries'
+import { getLaunch, upsertLaunch, upsertSubscription, upsertUserDevice, updatePushToStartTokenForUser, updateActivityToken, upsertTimelineEvents, getActiveSubscriptionsForUser, deleteSubscription, getProviderSubscriptionsForUser, upsertProviderSubscription, deleteProviderSubscription, getLocationSubscriptionsForUser, upsertLocationSubscription, deleteLocationSubscription, upsertLaunchesFeedSubscription, upsertEventsFeedSubscription, upsertNewsFeedSubscription, upsertAstronautsFeedSubscription, deleteFeedSubscription, insertLaunchOptOut, deleteLaunchOptOut, clearPushToStartToken, clearOptOutsForFeedSubscription, getUserPreferences, fanOutExistingLaunchesToFeedSubscription, logNotification, CONFIRMED_GO_IDS } from '../db/queries'
 import { syncLaunchById } from './ll2-poller'
 import { pushLiveActivityStart } from '../apns'
 import { pushLiveActivityUpdate } from '../apns'
@@ -160,7 +160,7 @@ export async function handleActivityToken(c: Context<{ Bindings: Env }>) {
       `).bind(launchId, now).first<{ label: string; fire_at: number }>()
 
       const apnsConfig = getApnsConfig(c.env)
-      await pushLiveActivityUpdate(c.env.KV, apnsConfig, activityToken, {
+      const result = await pushLiveActivityUpdate(c.env.KV, apnsConfig, activityToken, {
         event: 'update',
         contentState: {
           netDate: launch.t0,
@@ -174,6 +174,7 @@ export async function handleActivityToken(c: Context<{ Bindings: Env }>) {
           isWebcastLive: (launch.webcast_live ?? 0) === 1,
         },
       })
+      c.executionCtx.waitUntil(logNotification(c.env.DB, 'live_activity_update', userId, result.ok))
     })())
   }
 
@@ -431,6 +432,8 @@ export async function sendPushToStart(
       alertBody: 'Live Activity started',
       dismissalDate: now + 8 * 60 * 60,
     })
+
+    await logNotification(env.DB, 'live_activity_start', userId, result.ok)
 
     if (!result.ok) {
       console.error(`push-to-start failed for ${launchId}/${userId}: ${result.status} ${result.body}`)

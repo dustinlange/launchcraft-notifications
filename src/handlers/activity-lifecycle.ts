@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getSubscriptionsNeedingStart, getLaunchesNeedingEnd, markEndDispatched, getSubscriptionsForLaunch, clearPushToStartToken } from '../db/queries'
+import { getSubscriptionsNeedingStart, getLaunchesNeedingEnd, markEndDispatched, getSubscriptionsForLaunch, clearPushToStartToken, logNotification } from '../db/queries'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
 import { sendPushToStart } from './register'
@@ -114,6 +114,7 @@ export async function dispatchActivityEnds(env: Env) {
         },
         dismissalDate: now + 60 * 30,  // 30 min from now — must be in the future
       })
+      await logNotification(env.DB, 'live_activity_end', sub.user_id, result.ok)
       if (!result.ok) {
         console.error(`end push failed for ${launch.id}/${sub.user_id}: ${result.status} ${result.body}`)
       } else {

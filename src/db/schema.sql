@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS launches (
   mission_patch_url  TEXT,                    -- highest-priority mission patch image URL
   landing_location   TEXT,                    -- first stage landing location abbrev e.g. "OCISLY", "LZ-1"
   landing_type_id    INTEGER,                 -- first stage landing type ID (1=ASDS drone ship, 2=RTLS etc.)
+  landing_success    INTEGER,                 -- 1 = successful, 0 = failed, NULL = pending/unknown
   ll2_status_id    INTEGER NOT NULL DEFAULT 1,  -- LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
   has_timeline     INTEGER NOT NULL DEFAULT 0,
   is_crewed        INTEGER,                     -- 1 = crewed mission, 0 = uncrewed, NULL = unknown
@@ -29,11 +30,16 @@ CREATE TABLE IF NOT EXISTS launches (
 );
 
 -- Per-user device tokens (decoupled from per-launch subscriptions)
+-- device_token is nullable so clearDeviceToken() can null out a token APNs
+-- has confirmed is stale (BadDeviceToken/Unregistered) without violating a
+-- constraint — see alter-user-devices-nullable-token.sql.
 CREATE TABLE IF NOT EXISTS user_devices (
-  user_id             TEXT PRIMARY KEY,
-  device_token        TEXT NOT NULL,
-  push_to_start_token TEXT,
-  updated_at          INTEGER NOT NULL DEFAULT (unixepoch())
+  user_id                 TEXT PRIMARY KEY,
+  device_token            TEXT,
+  push_to_start_token     TEXT,
+  updated_at              INTEGER NOT NULL DEFAULT (unixepoch()),
+  pro_active              INTEGER NOT NULL DEFAULT 0,
+  original_transaction_id TEXT
 );
 
 -- Provider-level subscriptions (auto-fan-out to per-launch on new launches)
@@ -242,4 +248,28 @@ CREATE TABLE IF NOT EXISTS user_news_sources (
 CREATE TABLE IF NOT EXISTS news_dispatch_log (
   article_id    INTEGER PRIMARY KEY,
   dispatched_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Instrumentation log — one row per outbound APNs send attempt (success or failure).
+-- Backs the /admin/metrics push-notification counters. Not used for dedup/retry logic.
+CREATE TABLE IF NOT EXISTS notification_log (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  type     TEXT    NOT NULL,   -- 'live_activity_start'|'live_activity_update'|'live_activity_end'|'reminder'|'news'|'event'|'status_change'|'schedule_change'|'astronaut_status'|'pro_status_refresh'
+  user_id  TEXT,               -- NULL if not tied to a specific user
+  success  INTEGER NOT NULL,   -- 1 = APNs accepted the push, 0 = send failed
+  sent_at  INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_log_sent_at ON notification_log(sent_at);
+CREATE INDEX IF NOT EXISTS idx_notification_log_type ON notification_log(type, sent_at);
+
+-- Release highlights shown in the app's "What's New" modal, once per update.
+-- One row per app version; items is a JSON array so an admin write replaces a
+-- whole release in a single upsert. See add-whats-new.sql.
+CREATE TABLE IF NOT EXISTS whats_new (
+  version     TEXT    PRIMARY KEY,               -- CFBundleShortVersionString, e.g. '2026.3'
+  title       TEXT    NOT NULL DEFAULT 'What''s New',
+  items       TEXT    NOT NULL DEFAULT '[]',     -- [{ "systemImage": "", "title": "", "description": "" }]
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );

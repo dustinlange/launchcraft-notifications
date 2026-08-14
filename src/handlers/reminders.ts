@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getAllDueReminders, markReminderSent, clearDeviceToken } from '../db/queries'
+import { getAllDueReminders, markReminderSent, clearDeviceToken, logNotification } from '../db/queries'
 import { pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
 
@@ -28,6 +28,8 @@ export async function dispatchReminders(env: Env) {
       type: 'reminder',
       imageUrl: sub.image_url ?? sub.rocket_image_url ?? undefined,
     })
+
+    await logNotification(env.DB, 'reminder', sub.user_id, result.ok)
 
     if (result.ok) {
       await markReminderSent(env.DB, sub.id, sub.window_label)

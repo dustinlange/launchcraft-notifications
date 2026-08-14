@@ -5,6 +5,7 @@ import {
   upsertAstronautSnapshot,
   getUsersForAstronautAgency,
   clearDeviceToken,
+  logNotification,
 } from '../db/queries'
 import { pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -82,6 +83,7 @@ export async function pollAstronauts(env: Env): Promise<void> {
               type: 'astronaut_status',
               imageUrl,
             })
+            await logNotification(env.DB, 'astronaut_status', u.user_id, result.ok)
             if (!result.ok && (result.status === 410 || result.status === 400)) {
               console.warn(`Clearing stale device token for ${u.user_id} after APNs ${result.status}`)
               await clearDeviceToken(env.DB, u.user_id, u.device_token)

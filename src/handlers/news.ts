@@ -8,6 +8,7 @@ import {
   claimArticleForDispatch,
   pruneOldDispatchLog,
   clearDeviceToken,
+  logNotification,
 } from '../db/queries'
 import { pushAlertNotification, ApnsConfig } from '../apns'
 
@@ -82,6 +83,7 @@ export async function dispatchNewsNotifications(env: Env): Promise<void> {
           articleUrl: article.url,
           imageUrl: article.image_url ?? undefined,
         })
+        await logNotification(env.DB, 'news', u.user_id, result.ok)
         if (!result.ok && (result.status === 410 || result.status === 400)) {
           console.warn(`Clearing stale device token for ${u.user_id} after APNs ${result.status}`)
           await clearDeviceToken(env.DB, u.user_id, u.device_token)

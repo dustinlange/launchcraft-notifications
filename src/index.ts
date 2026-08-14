@@ -16,7 +16,10 @@ import { handleLL2Proxy } from './handlers/ll2-proxy'
 import { handleSNAPIProxy } from './handlers/snapi-proxy'
 import { handleProStatus } from './handlers/pro-status'
 import { handleGetFeedTemplates } from './handlers/feed-templates'
+import { handleGetWhatsNew, handleAdminUpsertWhatsNew, handleAdminListWhatsNew } from './handlers/whats-new'
 import { handleAppStoreNotification } from './handlers/appstore-notifications'
+import { handleAdminMetrics } from './handlers/admin-metrics'
+import { handleAppStoreAnalytics, refreshAppStoreData } from './handlers/app-store-analytics'
 
 export interface Env {
   DB: D1Database
@@ -31,8 +34,14 @@ export interface Env {
   LL2_API_KEY: string
   API_KEY: string
   API_KEY_PREVIOUS?: string  // kept during key rotation so old app versions keep working
+  ADMIN_API_KEY: string      // separate secret — gates /admin/* routes only, used by MissionControl
   HEALTHCHECK_URL?: string   // dead man's switch — ping URL from healthchecks.io
   ERROR_WEBHOOK_URL?: string // webhook to call when the cron handler throws (e.g. CPU limit)
+  ASC_KEY_ID?: string        // App Store Connect API key ID (10-char)
+  ASC_ISSUER_ID?: string     // App Store Connect issuer ID (UUID)
+  ASC_PRIVATE_KEY?: string   // App Store Connect .p8 private key contents
+  ASC_VENDOR_NUMBER?: string // App Store Connect vendor number (for sales reports)
+  ASC_APP_ID?: string        // Numeric app ID from App Store Connect
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -41,11 +50,12 @@ const app = new Hono<{ Bindings: Env }>()
 // - /webhook (has its own HMAC secret)
 // - /health (public liveness check)
 // - /appstore-notification (Apple calls this directly — verified by JWS signature instead)
+// - /admin/* (gated separately below by X-Admin-API-Key instead)
 // API_KEY_PREVIOUS is accepted during key rotation so old app versions keep working
 // while a new app build with the updated key rolls out.
 app.use('*', async (c, next) => {
   const path = new URL(c.req.url).pathname
-  if (path === '/webhook' || path === '/health' || path === '/appstore-notification') return next()
+  if (path === '/webhook' || path === '/health' || path === '/appstore-notification' || path.startsWith('/admin/')) return next()
 
   const key = c.req.header('X-API-Key')
   const validKeys = [c.env.API_KEY, c.env.API_KEY_PREVIOUS].filter(Boolean)
@@ -81,6 +91,7 @@ app.delete('/feed-subscription', handleUnsubscribeFromFeed)
 
 app.get('/feed-templates', handleGetFeedTemplates)
 app.get('/news-sources', handleGetNewsSources)
+app.get('/whats-new', handleGetWhatsNew)
 
 app.post('/pro-status', handleProStatus)
 app.post('/appstore-notification', handleAppStoreNotification)
@@ -96,6 +107,20 @@ app.get('/ll2/*', handleLL2Proxy)
 app.get('/snapi/*', handleSNAPIProxy)
 app.post('/test/trigger', handleTestTrigger)
 app.get('/health', (c) => c.json({ ok: true }))
+
+// Admin routes — gated by a dedicated X-Admin-API-Key secret, separate from the
+// client-facing X-API-Key above, so MissionControl's key can be rotated/scoped independently.
+app.use('/admin/*', async (c, next) => {
+  const key = c.req.header('X-Admin-API-Key')
+  if (!key || key !== c.env.ADMIN_API_KEY) {
+    return c.json({ error: 'unauthorized' }, 401)
+  }
+  return next()
+})
+app.get('/admin/metrics', handleAdminMetrics)
+app.get('/admin/app-store', handleAppStoreAnalytics)
+app.get('/admin/whats-new', handleAdminListWhatsNew)
+app.put('/admin/whats-new', handleAdminUpsertWhatsNew)
 
 export default {
   fetch: app.fetch,
@@ -143,6 +168,11 @@ export default {
     // ─── Every 15 minutes, offset to minute :03 ──────────────────────────────
     if (now % 900 >= 180 && now % 900 < 240) {
       ctx.waitUntil(pollAstronauts(env))
+    }
+
+    // ─── Every hour, offset to minute :05 ────────────────────────────────────
+    if (now % 3600 >= 300 && now % 3600 < 360) {
+      ctx.waitUntil(refreshAppStoreData(env).catch(err => console.error('[app-store] refresh failed:', err)))
     }
 
     // Dead man's switch — ping healthchecks.io so we get alerted if the cron stops firing

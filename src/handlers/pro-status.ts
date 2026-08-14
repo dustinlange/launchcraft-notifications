@@ -6,6 +6,7 @@ import {
   setProActiveForUserOnly,
   getUserIdsByTransactionId,
   getActiveActivityTokensForUser,
+  logNotification,
 } from '../db/queries'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
 import { getApnsConfig } from './webhook'
@@ -52,8 +53,8 @@ export async function endActiveLiveActivities(env: Env, userId: string) {
   const apnsConfig = getApnsConfig(env)
   const now = Math.floor(Date.now() / 1000)
 
-  await Promise.allSettled(subs.map(sub =>
-    pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token, {
+  await Promise.allSettled(subs.map(async sub => {
+    const result = await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token, {
       event: 'end',
       contentState: {
         netDate: sub.t0,
@@ -68,7 +69,8 @@ export async function endActiveLiveActivities(env: Env, userId: string) {
       },
       dismissalDate: now + 60 * 5,  // dismiss in 5 minutes
     })
-  ))
+    await logNotification(env.DB, 'live_activity_end', userId, result.ok)
+  }))
 }
 
 /** Ends Live Activities for all devices on the same Apple Account.

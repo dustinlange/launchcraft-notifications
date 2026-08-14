@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getLaunch, getLaunchesMap, upsertLaunch, upsertTimelineEvents, recalculateTimelineFireAt, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, getLaunchesNearT0Combined, fanOutProviderSubscriptions, fanOutLocationSubscriptions, fanOutAllUpcomingSubscriptions, backfillAttributesJson, resetReminderFlags, markWebcastNotified, TERMINAL_IDS, CONFIRMED_GO_IDS, LL2_STATUS, Launch } from '../db/queries'
+import { getLaunch, getLaunchesMap, upsertLaunch, upsertTimelineEvents, recalculateTimelineFireAt, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, getLaunchesNearT0Combined, fanOutProviderSubscriptions, fanOutLocationSubscriptions, fanOutAllUpcomingSubscriptions, backfillAttributesJson, resetReminderFlags, markWebcastNotified, logNotification, TERMINAL_IDS, CONFIRMED_GO_IDS, LL2_STATUS, Launch } from '../db/queries'
 import { createLL2Client, mapT0, parseRelativeTime } from '../ll2'
 import { pushAlertNotification } from '../apns'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
@@ -155,6 +155,7 @@ async function syncLaunch(env: Env, ll2: {
     mission_patch_url: missionPatchUrl,
     landing_location: landingLocation,
     landing_type_id: landingTypeId,
+    landing_success: landingSuccess,
     t0,
     window_start: windowStart,
     window_end: windowEnd,
@@ -233,7 +234,7 @@ async function syncLaunch(env: Env, ll2: {
 
   await Promise.allSettled(subs.map(async (sub) => {
     if (sub.activity_token) {
-      await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token, {
+      const activityResult = await pushLiveActivityUpdateAndClearOnFailure(env.DB, env.KV, apnsConfig, sub.id, sub.activity_token, {
         event: isTerminal ? 'end' : 'update',
         contentState: {
           netDate: t0,
@@ -247,6 +248,7 @@ async function syncLaunch(env: Env, ll2: {
           nextEventDate: isTerminal ? null : (sub.first_event_fire_at ?? null),
           statusId: ll2StatusId,
           isWebcastLive: webcastLiveNew === 1,
+          landingSuccess: landingSuccess,
         },
         alertTitle: statusChanged
           ? `${ll2.name}: ${statusLabel(ll2StatusId)}`
@@ -256,6 +258,7 @@ async function syncLaunch(env: Env, ll2: {
         alertBody: t0Changed && t0 ? `New window: ${new Date(t0 * 1000).toUTCString()}` : undefined,
         dismissalDate: isTerminal ? Math.floor(Date.now() / 1000) + 60 * 30 : undefined,
       })
+      await logNotification(env.DB, isTerminal ? 'live_activity_end' : 'live_activity_update', sub.user_id, activityResult.ok)
     }
 
     const wantsTerminal    = sub.notify_terminal_status !== 0  // NULL → default on
@@ -266,17 +269,18 @@ async function syncLaunch(env: Env, ll2: {
     const launchImageUrl = sub.image_url ?? sub.rocket_image_url ?? undefined
 
     if (webcastJustWentLive && wantsWebcast && !sub.webcast_notified) {
-      await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
+      const result = await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
         title: 'Webcast is Live!',
         body: `The webcast for ${ll2.name} is live!`,
         launchId: ll2.id,
         type: 'status_change',
         imageUrl: launchImageUrl,
       })
+      await logNotification(env.DB, 'status_change', sub.user_id, result.ok)
       await markWebcastNotified(env.DB, sub.id)
     } else if (statusChanged && (isTerminal ? wantsTerminal : wantsStatusChange)) {
-      await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
-        title: 'Status Changed',
+      const result = await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
+        title: isTerminal ? terminalTitle(ll2StatusId) : 'Status Changed',
         body: isTerminal
           ? statusBody(ll2StatusId, ll2.name, ll2.rocket.configuration.name)
           : `${ll2.name} status has changed from ${statusLabel(prev.ll2_status_id)} to ${statusLabel(ll2StatusId)}`,
@@ -284,8 +288,9 @@ async function syncLaunch(env: Env, ll2: {
         type: 'status_change',
         imageUrl: launchImageUrl,
       })
+      await logNotification(env.DB, 'status_change', sub.user_id, result.ok)
     } else if (t0Changed && t0 && wantsNetChange) {
-      await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
+      const result = await pushAlertNotification(env.KV, apnsConfig, sub.device_token, {
         title: 'Launch Rescheduled',
         body: new Date(t0 * 1000).toUTCString(),
         launchId: ll2.id,
@@ -294,8 +299,15 @@ async function syncLaunch(env: Env, ll2: {
         launchName: ll2.name,
         imageUrl: launchImageUrl,
       })
+      await logNotification(env.DB, 'schedule_change', sub.user_id, result.ok)
     }
   }))
+}
+
+function terminalTitle(id: number): string {
+  return (id === LL2_STATUS.SUCCESS || id === LL2_STATUS.PAYLOAD_DEPLOYED)
+    ? 'Launch Successful!'
+    : 'Launch Failure!'
 }
 
 function statusLabel(id: number): string {
@@ -305,9 +317,10 @@ function statusLabel(id: number): string {
     [LL2_STATUS.TBC]:             'TBC',
     [LL2_STATUS.HOLD]:            'Launch Hold',
     [LL2_STATUS.IN_FLIGHT]:       'In Flight',
-    [LL2_STATUS.SUCCESS]:         'Launch Successful',
-    [LL2_STATUS.FAILURE]:         'Launch Failed',
-    [LL2_STATUS.PARTIAL_FAILURE]: 'Partial Failure',
+    [LL2_STATUS.SUCCESS]:          'Launch Successful',
+    [LL2_STATUS.FAILURE]:          'Launch Failed',
+    [LL2_STATUS.PARTIAL_FAILURE]:  'Partial Failure',
+    [LL2_STATUS.PAYLOAD_DEPLOYED]: 'Payload Deployed',
   }
   return m[id] ?? `Status ${id}`
 }
@@ -317,9 +330,10 @@ function statusBody(id: number, name: string, rocket: string): string {
     [LL2_STATUS.TBD]:             `${rocket} launch date is to be determined.`,
     [LL2_STATUS.TBC]:             `${rocket} launch date is to be confirmed.`,
     [LL2_STATUS.HOLD]:            `${rocket} is currently on hold.`,
-    [LL2_STATUS.SUCCESS]:         `${name} was successful!`,
-    [LL2_STATUS.FAILURE]:         `${name} has failed!`,
-    [LL2_STATUS.PARTIAL_FAILURE]: `${name} was a partial failure!`,
+    [LL2_STATUS.SUCCESS]:          `${name} was successful!`,
+    [LL2_STATUS.FAILURE]:          `${name} has failed!`,
+    [LL2_STATUS.PARTIAL_FAILURE]:  `${name} was a partial failure!`,
+    [LL2_STATUS.PAYLOAD_DEPLOYED]: `${name} successfully deployed its payload!`,
   }
   return m[id] ?? `Launch status changed.`
 }

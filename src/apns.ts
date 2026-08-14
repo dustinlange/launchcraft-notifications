@@ -27,6 +27,7 @@ export interface LaunchContentState {
   nextEventDate: number | null    // absolute Unix timestamp when next event will fire
   statusId: number                // LL2 status ID: 1=Go,2=TBD,3=Success,4=Failure,5=Hold,6=InFlight,7=PartialFailure,8=TBC
   isWebcastLive: boolean          // true when the webcast stream is currently live
+  landingSuccess: boolean | null  // true = landed, false = failed, null = pending/no attempt
 }
 
 // Seconds between Unix epoch (Jan 1 1970) and Apple reference date (Jan 1 2001).
@@ -46,6 +47,7 @@ function toAppleContentState(cs: LaunchContentState): Record<string, unknown> {
     nextEventDate:    toApple(cs.nextEventDate),
     statusId:         cs.statusId,
     isWebcastLive:    cs.isWebcastLive,
+    landingSuccess:   cs.landingSuccess,
   }
 }
 

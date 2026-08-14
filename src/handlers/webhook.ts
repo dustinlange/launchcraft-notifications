@@ -73,6 +73,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
           nextEventDate: null,
           statusId: body.ll2StatusId,
           isWebcastLive: false,
+          landingSuccess: sub.landing_success === null ? null : sub.landing_success === 1,
         },
         alertTitle: statusChanged ? `${body.name}: ${statusLabel(body.ll2StatusId)}` : undefined,
         alertBody: t0Changed && body.t0 ? `Launch window updated` : undefined,
@@ -95,7 +96,7 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
 
     if (statusChanged && (isTerminal ? wantsTerminal : wantsStatusChange)) {
       const result = await pushAlertNotification(c.env.KV, apnsConfig, sub.device_token, {
-        title: 'Status Changed',
+        title: isTerminal ? terminalTitle(body.ll2StatusId) : 'Status Changed',
         body: isTerminal
           ? statusBody(body.ll2StatusId, body.name, body.rocket)
           : `${body.name} status has changed from ${statusLabel(prev.ll2_status_id)} to ${statusLabel(body.ll2StatusId)}`,
@@ -121,6 +122,12 @@ export async function handleWebhook(c: Context<{ Bindings: Env }>) {
   return c.json({ ok: true })
 }
 
+function terminalTitle(id: number): string {
+  return (id === LL2_STATUS.SUCCESS || id === LL2_STATUS.PAYLOAD_DEPLOYED)
+    ? 'Launch Successful!'
+    : 'Launch Failure!'
+}
+
 function statusLabel(id: number): string {
   const m: Record<number, string> = {
     [LL2_STATUS.GO]:              'Go for Launch',
@@ -128,9 +135,10 @@ function statusLabel(id: number): string {
     [LL2_STATUS.TBC]:             'Status: TBC',
     [LL2_STATUS.HOLD]:            'Launch Hold',
     [LL2_STATUS.IN_FLIGHT]:       'In Flight',
-    [LL2_STATUS.SUCCESS]:         'Launch Successful',
-    [LL2_STATUS.FAILURE]:         'Launch Failed',
-    [LL2_STATUS.PARTIAL_FAILURE]: 'Partial Failure',
+    [LL2_STATUS.SUCCESS]:          'Launch Successful',
+    [LL2_STATUS.FAILURE]:          'Launch Failed',
+    [LL2_STATUS.PARTIAL_FAILURE]:  'Partial Failure',
+    [LL2_STATUS.PAYLOAD_DEPLOYED]: 'Payload Deployed',
   }
   return m[id] ?? `Status ${id}`
 }
@@ -140,9 +148,10 @@ function statusBody(id: number, name: string, rocket: string): string {
     [LL2_STATUS.TBD]:             `${rocket} launch date is to be determined.`,
     [LL2_STATUS.TBC]:             `${rocket} launch date is to be confirmed.`,
     [LL2_STATUS.HOLD]:            `${rocket} is currently on hold.`,
-    [LL2_STATUS.SUCCESS]:         `${name} was successful!`,
-    [LL2_STATUS.FAILURE]:         `${name} has failed!`,
-    [LL2_STATUS.PARTIAL_FAILURE]: `${name} was a partial failure!`,
+    [LL2_STATUS.SUCCESS]:          `${name} was successful!`,
+    [LL2_STATUS.FAILURE]:          `${name} has failed!`,
+    [LL2_STATUS.PARTIAL_FAILURE]:  `${name} was a partial failure!`,
+    [LL2_STATUS.PAYLOAD_DEPLOYED]: `${name} successfully deployed its payload!`,
   }
   return m[id] ?? `Launch status changed.`
 }

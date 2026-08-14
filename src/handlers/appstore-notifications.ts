@@ -1,6 +1,6 @@
 import { Context } from 'hono'
 import { Env } from '../index'
-import { setProActiveByTransactionId, getUserIdsByTransactionId, getDeviceTokensByTransactionId } from '../db/queries'
+import { setProActiveByTransactionId, getUserIdsByTransactionId, getDeviceTokensByTransactionId, logNotification } from '../db/queries'
 import { endActiveLiveActivities } from './pro-status'
 import { pushSilentProStatusChange } from '../apns'
 import { getApnsConfig } from './webhook'
@@ -100,7 +100,10 @@ export async function handleAppStoreNotification(c: Context<{ Bindings: Env }>) 
 
     // Silent push first (fast, fires immediately)
     await Promise.allSettled(
-      devices.map(d => pushSilentProStatusChange(c.env.KV, apnsConfig, d.device_token))
+      devices.map(async d => {
+        const result = await pushSilentProStatusChange(c.env.KV, apnsConfig, d.device_token)
+        await logNotification(c.env.DB, 'pro_status_refresh', d.user_id, result.ok)
+      })
     )
 
     // End Live Activities on cancellation/expiry
