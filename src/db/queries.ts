@@ -1287,6 +1287,7 @@ export type NotificationLogType =
   | 'schedule_change'
   | 'astronaut_status'
   | 'pro_status_refresh'
+  | 'pro_expired'
 
 /** Records one outbound APNs send attempt (success or failure). Fire-and-forget from call sites. */
 export function logNotification(

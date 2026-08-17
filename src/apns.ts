@@ -63,7 +63,7 @@ export interface AlertPayload {
   title: string
   body: string
   launchId: string
-  type: 'reminder' | 'status_change' | 'schedule_change' | 'news' | 'event_reminder' | 'astronaut_status'
+  type: 'reminder' | 'status_change' | 'schedule_change' | 'news' | 'event_reminder' | 'astronaut_status' | 'pro_expired'
   t0?: number        // unix timestamp; included for schedule_change so iOS can format locally
   launchName?: string
   articleUrl?: string  // included for news notifications so iOS can open the article on tap

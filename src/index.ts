@@ -19,7 +19,7 @@ import { handleGetFeedTemplates } from './handlers/feed-templates'
 import { handleAppStoreNotification } from './handlers/appstore-notifications'
 import { handleAdminMetrics } from './handlers/admin-metrics'
 import { handleAppStoreAnalytics, refreshAppStoreData } from './handlers/app-store-analytics'
-import { handleListVersions, handleCreateVersion, handleDeleteVersion, handleListItems, handleCreateItem, handleUpdateItem, handleDeleteItem } from './handlers/whats-new'
+import { handleGetWhatsNew, handleGetWhatsNewVersions, handleListVersions, handleCreateVersion, handleDeleteVersion, handleListItems, handleCreateItem, handleUpdateItem, handleDeleteItem } from './handlers/whats-new'
 
 export interface Env {
   DB: D1Database
@@ -91,6 +91,8 @@ app.delete('/feed-subscription', handleUnsubscribeFromFeed)
 
 app.get('/feed-templates', handleGetFeedTemplates)
 app.get('/news-sources', handleGetNewsSources)
+app.get('/whats-new', handleGetWhatsNew)
+app.get('/whats-new/versions', handleGetWhatsNewVersions)
 
 
 app.post('/pro-status', handleProStatus)

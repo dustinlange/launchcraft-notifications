@@ -2,14 +2,71 @@ import { Context } from 'hono'
 import { Env } from '../index'
 
 interface VersionRow { id: number; version: string; title: string | null; released_at: number | null; created_at: number; item_count: number }
-interface ItemRow { id: number; version_id: number; type: string; title: string; body: string | null; sort_order: number; created_at: number; updated_at: number }
+interface ItemRow { id: number; version_id: number; type: string; title: string; body: string | null; sort_order: number; system_image: string; created_at: number; updated_at: number }
 
 function mapVersion(r: VersionRow) {
   return { id: r.id, version: r.version, title: r.title, releasedAt: r.released_at, createdAt: r.created_at, itemCount: r.item_count }
 }
 
 function mapItem(r: ItemRow) {
-  return { id: r.id, versionId: r.version_id, type: r.type, title: r.title, body: r.body, sortOrder: r.sort_order, createdAt: r.created_at, updatedAt: r.updated_at }
+  return { id: r.id, versionId: r.version_id, type: r.type, title: r.title, body: r.body, sortOrder: r.sort_order, systemImage: r.system_image, createdAt: r.created_at, updatedAt: r.updated_at }
+}
+
+// ─── Public ───────────────────────────────────────────────────────────────────
+
+// GET /whats-new?version=2026.3 — called by the app on launch. Returns
+// { release: null } with a 200 when there's nothing for this version (no
+// matching row, or a row with zero items), so "no notes this release" stays
+// off the client's error path.
+export async function handleGetWhatsNew(c: Context<{ Bindings: Env }>) {
+  const version = c.req.query('version')
+  if (!version) return c.json({ error: 'missing version' }, 400)
+
+  const versionRow = await c.env.DB.prepare(
+    'SELECT id, title FROM whats_new_versions WHERE version = ?'
+  ).bind(version).first<{ id: number; title: string | null }>()
+
+  if (!versionRow) return c.json({ release: null })
+
+  const { results } = await c.env.DB.prepare(
+    'SELECT title, body, system_image FROM whats_new_items WHERE version_id = ? ORDER BY sort_order ASC, created_at ASC'
+  ).bind(versionRow.id).all<{ title: string; body: string | null; system_image: string }>()
+
+  if (!results || results.length === 0) return c.json({ release: null })
+
+  return c.json({
+    release: {
+      version,
+      title: versionRow.title || "What's New",
+      items: results.map(item => ({
+        systemImage: item.system_image,
+        title: item.title,
+        description: item.body ?? '',
+      })),
+    },
+  })
+}
+
+// GET /whats-new/versions — public list of past releases that actually have
+// content, for the app's "Previous Versions" settings screen. Excludes empty
+// version rows an admin has created but not yet filled in.
+export async function handleGetWhatsNewVersions(c: Context<{ Bindings: Env }>) {
+  const { results } = await c.env.DB.prepare(`
+    SELECT v.version, v.title, v.released_at, v.created_at, COUNT(i.id) AS item_count
+    FROM whats_new_versions v
+    JOIN whats_new_items i ON i.version_id = v.id
+    GROUP BY v.id
+    HAVING COUNT(i.id) > 0
+    ORDER BY COALESCE(v.released_at, v.created_at) DESC
+  `).all<{ version: string; title: string | null; released_at: number | null; created_at: number; item_count: number }>()
+
+  const versions = (results ?? []).map(row => ({
+    version: row.version,
+    title: row.title || "What's New",
+    releasedAt: row.released_at,
+  }))
+
+  return c.json({ versions })
 }
 
 // ─── Versions ─────────────────────────────────────────────────────────────────
@@ -52,7 +109,7 @@ export async function handleListItems(c: Context<{ Bindings: Env }>) {
 
 export async function handleCreateItem(c: Context<{ Bindings: Env }>) {
   const versionId = Number(c.req.param('id'))
-  const body = await c.req.json<{ type?: string; title?: string; body?: string }>()
+  const body = await c.req.json<{ type?: string; title?: string; body?: string; systemImage?: string }>()
   if (!body.title?.trim()) return c.json({ error: 'title required' }, 400)
 
   const maxRow = await c.env.DB.prepare(
@@ -60,20 +117,27 @@ export async function handleCreateItem(c: Context<{ Bindings: Env }>) {
   ).bind(versionId).first<{ next: number }>()
 
   const row = await c.env.DB.prepare(
-    'INSERT INTO whats_new_items (version_id, type, title, body, sort_order) VALUES (?, ?, ?, ?, ?) RETURNING *'
-  ).bind(versionId, body.type ?? 'feature', body.title.trim(), body.body?.trim() || null, maxRow?.next ?? 0).first<ItemRow>()
+    'INSERT INTO whats_new_items (version_id, type, title, body, sort_order, system_image) VALUES (?, ?, ?, ?, ?, ?) RETURNING *'
+  ).bind(
+    versionId,
+    body.type ?? 'feature',
+    body.title.trim(),
+    body.body?.trim() || null,
+    maxRow?.next ?? 0,
+    body.systemImage?.trim() || 'sparkles'
+  ).first<ItemRow>()
 
   return c.json(mapItem(row!), 201)
 }
 
 export async function handleUpdateItem(c: Context<{ Bindings: Env }>) {
   const itemId = Number(c.req.param('itemId'))
-  const body = await c.req.json<{ type: string; title: string; body?: string | null; sortOrder?: number }>()
+  const body = await c.req.json<{ type: string; title: string; body?: string | null; sortOrder?: number; systemImage?: string }>()
   if (!body.title?.trim()) return c.json({ error: 'title required' }, 400)
 
   await c.env.DB.prepare(
-    'UPDATE whats_new_items SET type = ?, title = ?, body = ?, updated_at = unixepoch() WHERE id = ?'
-  ).bind(body.type, body.title.trim(), body.body?.trim() || null, itemId).run()
+    'UPDATE whats_new_items SET type = ?, title = ?, body = ?, system_image = ?, updated_at = unixepoch() WHERE id = ?'
+  ).bind(body.type, body.title.trim(), body.body?.trim() || null, body.systemImage?.trim() || 'sparkles', itemId).run()
 
   return c.json({ ok: true })
 }

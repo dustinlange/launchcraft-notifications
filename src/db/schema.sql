@@ -264,12 +264,27 @@ CREATE INDEX IF NOT EXISTS idx_notification_log_sent_at ON notification_log(sent
 CREATE INDEX IF NOT EXISTS idx_notification_log_type ON notification_log(type, sent_at);
 
 -- Release highlights shown in the app's "What's New" modal, once per update.
--- One row per app version; items is a JSON array so an admin write replaces a
--- whole release in a single upsert. See add-whats-new.sql.
-CREATE TABLE IF NOT EXISTS whats_new (
-  version     TEXT    PRIMARY KEY,               -- CFBundleShortVersionString, e.g. '2026.3'
-  title       TEXT    NOT NULL DEFAULT 'What''s New',
-  items       TEXT    NOT NULL DEFAULT '[]',     -- [{ "systemImage": "", "title": "", "description": "" }]
-  enabled     INTEGER NOT NULL DEFAULT 1,
-  updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+-- Normalized so an admin editor can manage individual items rather than
+-- replacing a whole release's JSON blob at once. See whats-new-migration.sql
+-- and alter-whats-new-items-icon.sql.
+CREATE TABLE IF NOT EXISTS whats_new_versions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  version     TEXT    NOT NULL UNIQUE,           -- CFBundleShortVersionString, e.g. '2026.3'
+  title       TEXT,
+  released_at INTEGER,
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
+
+CREATE TABLE IF NOT EXISTS whats_new_items (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  version_id   INTEGER NOT NULL REFERENCES whats_new_versions(id) ON DELETE CASCADE,
+  type         TEXT    NOT NULL DEFAULT 'feature',
+  title        TEXT    NOT NULL,
+  body         TEXT,
+  sort_order   INTEGER NOT NULL DEFAULT 0,
+  system_image TEXT    NOT NULL DEFAULT 'sparkles',
+  created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE INDEX IF NOT EXISTS idx_whats_new_items_version ON whats_new_items(version_id, sort_order);

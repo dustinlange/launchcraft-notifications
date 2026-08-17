@@ -2,7 +2,7 @@ import { Context } from 'hono'
 import { Env } from '../index'
 import { setProActiveByTransactionId, getUserIdsByTransactionId, getDeviceTokensByTransactionId, logNotification } from '../db/queries'
 import { endActiveLiveActivities } from './pro-status'
-import { pushSilentProStatusChange } from '../apns'
+import { pushSilentProStatusChange, pushAlertNotification } from '../apns'
 import { getApnsConfig } from './webhook'
 
 // Notification types that mean the subscription is no longer active.
@@ -109,6 +109,20 @@ export async function handleAppStoreNotification(c: Context<{ Bindings: Env }>) 
     // End Live Activities on cancellation/expiry
     if (!active) {
       await Promise.allSettled(devices.map(d => endActiveLiveActivities(c.env, d.user_id)))
+
+      // Also let the user know their Pro access is gone — the silent push above only
+      // refreshes state for a running app, it has no visible alert on its own.
+      await Promise.allSettled(
+        devices.map(async d => {
+          const result = await pushAlertNotification(c.env.KV, apnsConfig, d.device_token, {
+            title: 'Pro Access Expired',
+            body: 'Your Launchcraft Pro subscription has ended. Renew anytime to get your Pro features back.',
+            launchId: '',
+            type: 'pro_expired',
+          })
+          await logNotification(c.env.DB, 'pro_expired', d.user_id, result.ok)
+        })
+      )
     }
   })())
 
