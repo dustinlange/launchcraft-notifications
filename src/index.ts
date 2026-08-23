@@ -10,6 +10,7 @@ import { handleGetPreferences, handleSavePreferences } from './handlers/preferen
 import { handleStartup } from './handlers/startup'
 import { handleTestTrigger } from './handlers/test'
 import { dispatchNewsNotifications, handleGetNewsSources } from './handlers/news'
+import { handleArticleExtract } from './handlers/article-extract'
 import { dispatchEventNotifications } from './handlers/events-notifications'
 import { pollAstronauts } from './handlers/astronauts-poller'
 import { handleLL2Proxy } from './handlers/ll2-proxy'
@@ -91,6 +92,7 @@ app.delete('/feed-subscription', handleUnsubscribeFromFeed)
 
 app.get('/feed-templates', handleGetFeedTemplates)
 app.get('/news-sources', handleGetNewsSources)
+app.get('/article-extract', handleArticleExtract)
 app.get('/whats-new', handleGetWhatsNew)
 app.get('/whats-new/versions', handleGetWhatsNewVersions)
 

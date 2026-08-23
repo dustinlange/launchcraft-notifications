@@ -59,11 +59,15 @@ async function ascGet(env: Env, path: string): Promise<Response> {
 
 async function fetchRating(env: Env): Promise<{ average: number; count: number }> {
   const res = await ascGet(env, `/v1/apps/${env.ASC_APP_ID}?fields[apps]=averageUserRating,userRatingCount`)
-  if (!res.ok) throw new Error(`Rating API ${res.status}`)
-  const json = await res.json<{ data: { attributes: { averageUserRating?: number; userRatingCount?: number } } }>()
+  if (!res.ok) {
+    console.log('[app-store] rating API status:', res.status, await res.text().catch(() => ''))
+    throw new Error(`Rating API ${res.status}`)
+  }
+  const json = await res.json<{ data: { attributes: { averageUserRating?: number | null; userRatingCount?: number | null } } }>()
   const attrs = json.data.attributes
+  console.log('[app-store] rating attrs:', JSON.stringify(attrs))
   return {
-    average: Math.round((attrs.averageUserRating ?? 0) * 10) / 10,
+    average: attrs.averageUserRating != null ? Math.round(attrs.averageUserRating * 10) / 10 : null as unknown as number,
     count: attrs.userRatingCount ?? 0,
   }
 }
@@ -88,24 +92,43 @@ async function fetchSalesReport(env: Env, date: string): Promise<{ units: number
     'filter[frequency]': 'DAILY',
     'filter[reportType]': 'SALES',
     'filter[reportSubType]': 'SUMMARY',
-    'filter[vendorNumber]': env.ASC_VENDOR_NUMBER,
+    'filter[vendorNumber]': env.ASC_VENDOR_NUMBER ?? '',
     'filter[reportDate]': date,
   })
   const jwt = await getAscJwt(env)
   const res = await fetch(`${ASC_BASE}/v1/salesReports?${params}`, {
-    headers: { Authorization: `Bearer ${jwt}` },
+    headers: { Authorization: `Bearer ${jwt}`, 'Accept-Encoding': 'gzip' },
   })
 
-  if (!res.ok || !res.body) return { units: 0, proceeds: 0 }
+  if (!res.ok || !res.body) {
+    const errText = await res.text().catch(() => '')
+    console.log(`[app-store] sales report ${date} status=${res.status}`, errText.slice(0, 200))
+    return { units: 0, proceeds: 0 }
+  }
 
-  // Response is gzip-compressed TSV
-  const text = await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).text()
+  // Response is gzip-compressed TSV; fall back to plain text if decompression fails
+  let text: string
+  const contentEncoding = res.headers.get('content-encoding') ?? ''
+  if (contentEncoding.includes('gzip') || res.headers.get('content-type')?.includes('gzip')) {
+    try {
+      text = await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).text()
+    } catch {
+      text = await res.clone().text()
+    }
+  } else {
+    text = await res.text()
+  }
+
   const lines = text.trim().split('\n')
-  if (lines.length < 2) return { units: 0, proceeds: 0 }
+  if (lines.length < 2) {
+    console.log(`[app-store] sales report ${date} empty or unparseable, first 200 chars:`, text.slice(0, 200))
+    return { units: 0, proceeds: 0 }
+  }
 
   const headers = lines[0].split('\t')
   const unitsIdx = headers.indexOf('Units')
   const proceedsIdx = headers.indexOf('Developer Proceeds')
+  console.log(`[app-store] sales report ${date} columns:`, headers.join(', '))
 
   let units = 0, proceeds = 0
   for (let i = 1; i < lines.length; i++) {
@@ -157,9 +180,15 @@ export async function refreshAppStoreData(env: Env): Promise<void> {
 export async function handleAppStoreAnalytics(c: Context<{ Bindings: Env }>) {
   const cached = await c.env.KV.get(CACHE_KEY)
   if (!cached) {
-    // Nothing cached yet — kick off a refresh and tell the client to try later
-    c.executionCtx.waitUntil(refreshAppStoreData(c.env))
-    return c.json({ loading: true }, 202)
+    await refreshAppStoreData(c.env)
+    const fresh = await c.env.KV.get(CACHE_KEY)
+    if (!fresh) return c.json({ error: 'Failed to fetch App Store data' }, 502)
+    return c.json(JSON.parse(fresh) as AppStoreMetrics)
   }
-  return c.json(JSON.parse(cached) as AppStoreMetrics)
+  // Serve cached data and refresh in the background if it is older than 1 hour
+  const metrics = JSON.parse(cached) as AppStoreMetrics
+  if (Date.now() / 1000 - metrics.lastUpdated > 3600) {
+    c.executionCtx.waitUntil(refreshAppStoreData(c.env))
+  }
+  return c.json(metrics)
 }
