@@ -2,6 +2,14 @@ import { Context } from 'hono'
 import { Env } from '../index'
 import { getLaunch } from '../db/queries'
 
+// Matches LL2's own timestamp format (no fractional seconds) — the iOS
+// client parses these dates with a plain ISO8601DateFormatter (no
+// .withFractionalSeconds option) shared with LL2 date parsing, which fails
+// silently on Date.toISOString()'s default ".SSS" milliseconds suffix.
+function toLL2ISOString(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
 // GET /launch-extras?launchId=<id>
 // Supplemental per-launch data the app needs alongside the LL2 launch
 // object but that only this backend knows (currently just the most recent
@@ -14,8 +22,8 @@ export async function handleGetLaunchExtras(c: Context<{ Bindings: Env }>) {
   const launch = await getLaunch(c.env.DB, launchId)
   const netChange = (launch?.previous_t0 != null && launch?.net_changed_at != null)
     ? {
-        previousNet: new Date(launch.previous_t0 * 1000).toISOString(),
-        changedAt: new Date(launch.net_changed_at * 1000).toISOString(),
+        previousNet: toLL2ISOString(launch.previous_t0),
+        changedAt: toLL2ISOString(launch.net_changed_at),
       }
     : null
 

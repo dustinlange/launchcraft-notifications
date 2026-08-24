@@ -146,3 +146,16 @@ export async function handleDeleteItem(c: Context<{ Bindings: Env }>) {
   await c.env.DB.prepare('DELETE FROM whats_new_items WHERE id = ?').bind(Number(c.req.param('itemId'))).run()
   return c.json({ ok: true })
 }
+
+export async function handleReorderItems(c: Context<{ Bindings: Env }>) {
+  const versionId = Number(c.req.param('id'))
+  const body = await c.req.json<{ ids: number[] }>()
+  if (!Array.isArray(body.ids)) return c.json({ error: 'ids array required' }, 400)
+
+  const stmts = body.ids.map((id, index) =>
+    c.env.DB.prepare('UPDATE whats_new_items SET sort_order = ? WHERE id = ? AND version_id = ?')
+      .bind(index, id, versionId)
+  )
+  await c.env.DB.batch(stmts)
+  return c.json({ ok: true })
+}

@@ -21,7 +21,7 @@ import { handleGetFeedTemplates } from './handlers/feed-templates'
 import { handleAppStoreNotification } from './handlers/appstore-notifications'
 import { handleAdminMetrics } from './handlers/admin-metrics'
 import { handleAppStoreAnalytics, refreshAppStoreData } from './handlers/app-store-analytics'
-import { handleGetWhatsNew, handleGetWhatsNewVersions, handleListVersions, handleCreateVersion, handleDeleteVersion, handleListItems, handleCreateItem, handleUpdateItem, handleDeleteItem } from './handlers/whats-new'
+import { handleGetWhatsNew, handleGetWhatsNewVersions, handleListVersions, handleCreateVersion, handleDeleteVersion, handleListItems, handleCreateItem, handleUpdateItem, handleDeleteItem, handleReorderItems } from './handlers/whats-new'
 
 export interface Env {
   DB: D1Database
@@ -133,6 +133,7 @@ app.get('/admin/whats-new/versions/:id/items', handleListItems)
 app.post('/admin/whats-new/versions/:id/items', handleCreateItem)
 app.put('/admin/whats-new/items/:itemId', handleUpdateItem)
 app.delete('/admin/whats-new/items/:itemId', handleDeleteItem)
+app.put('/admin/whats-new/versions/:id/items/reorder', handleReorderItems)
 
 export default {
   fetch: app.fetch,
