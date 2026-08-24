@@ -132,12 +132,12 @@ export async function handleCreateItem(c: Context<{ Bindings: Env }>) {
 
 export async function handleUpdateItem(c: Context<{ Bindings: Env }>) {
   const itemId = Number(c.req.param('itemId'))
-  const body = await c.req.json<{ type: string; title: string; body?: string | null; sortOrder?: number; systemImage?: string }>()
+  const body = await c.req.json<{ type?: string; title: string; body?: string | null; sortOrder?: number; systemImage?: string }>()
   if (!body.title?.trim()) return c.json({ error: 'title required' }, 400)
 
   await c.env.DB.prepare(
     'UPDATE whats_new_items SET type = ?, title = ?, body = ?, system_image = ?, updated_at = unixepoch() WHERE id = ?'
-  ).bind(body.type, body.title.trim(), body.body?.trim() || null, body.systemImage?.trim() || 'sparkles', itemId).run()
+  ).bind(body.type ?? 'feature', body.title.trim(), body.body?.trim() || null, body.systemImage?.trim() || 'sparkles', itemId).run()
 
   return c.json({ ok: true })
 }

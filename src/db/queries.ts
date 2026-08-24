@@ -45,6 +45,8 @@ export interface Launch {
   success_at: number | null
   end_dispatched: number
   webcast_live: number | null
+  previous_t0: number | null
+  net_changed_at: number | null
   last_updated: number
 }
 
@@ -106,7 +108,7 @@ export async function getLaunchesMap(db: D1Database, ids: string[]): Promise<Map
   return new Map(results.map(l => [l.id, l]))
 }
 
-export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'>) {
+export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated' | 'previous_t0' | 'net_changed_at'>) {
   return db.prepare(`
     INSERT INTO launches (id, name, mission_name, rocket, pad, pad_location, pad_location_id, provider, provider_id, provider_logo_url, provider_social_logo_url, image_url, rocket_image_url, mission_patch_url, landing_location, landing_type_id, landing_success, t0, window_start, window_end, ll2_status_id, has_timeline, is_crewed, webcast_live, last_updated)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
@@ -144,6 +146,14 @@ export function upsertLaunch(db: D1Database, launch: Omit<Launch, 'last_updated'
     launch.ll2_status_id, launch.has_timeline, launch.is_crewed ?? null,
     launch.webcast_live ?? null
   ).run()
+}
+
+/// Records the previous NET when it changes, so the app can surface
+/// "previous NET → new NET" on the launch detail view. The new NET itself
+/// isn't stored here — it's already in launches.t0 via upsertLaunch.
+export function recordNetChange(db: D1Database, id: string, previousT0: number, changedAt: number = Math.floor(Date.now() / 1000)) {
+  return db.prepare('UPDATE launches SET previous_t0 = ?, net_changed_at = ? WHERE id = ?')
+    .bind(previousT0, changedAt, id).run()
 }
 
 export function getActiveSubscriptionsForUser(db: D1Database, userId: string) {

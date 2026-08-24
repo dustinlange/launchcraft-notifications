@@ -1,5 +1,5 @@
 import { Env } from '../index'
-import { getLaunch, getLaunchesMap, upsertLaunch, upsertTimelineEvents, recalculateTimelineFireAt, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, getLaunchesNearT0Combined, fanOutProviderSubscriptions, fanOutLocationSubscriptions, fanOutAllUpcomingSubscriptions, backfillAttributesJson, resetReminderFlags, markWebcastNotified, logNotification, TERMINAL_IDS, CONFIRMED_GO_IDS, LL2_STATUS, Launch } from '../db/queries'
+import { getLaunch, getLaunchesMap, upsertLaunch, recordNetChange, upsertTimelineEvents, recalculateTimelineFireAt, getSubscriptionsForLaunch, markSuccessAt, getSubscribedLaunchIds, getLaunchesNearT0Combined, fanOutProviderSubscriptions, fanOutLocationSubscriptions, fanOutAllUpcomingSubscriptions, backfillAttributesJson, resetReminderFlags, markWebcastNotified, logNotification, TERMINAL_IDS, CONFIRMED_GO_IDS, LL2_STATUS, Launch } from '../db/queries'
 import { createLL2Client, mapT0, parseRelativeTime } from '../ll2'
 import { pushAlertNotification } from '../apns'
 import { pushLiveActivityUpdateAndClearOnFailure } from '../liveActivityPush'
@@ -166,6 +166,10 @@ async function syncLaunch(env: Env, ll2: {
     success_at: null,
     end_dispatched: 0,
   })
+
+  if (t0Changed && prev?.t0 != null && t0 != null) {
+    await recordNetChange(env.DB, ll2.id, prev.t0)
+  }
 
   // Only upsert timeline events when something meaningful changed:
   //  - new launch (prev is null) — rows don't exist yet

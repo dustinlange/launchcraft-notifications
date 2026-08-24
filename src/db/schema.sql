@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS launches (
   success_at       INTEGER,                     -- unix timestamp when status first became 'success'
   end_dispatched   INTEGER NOT NULL DEFAULT 0,  -- 1 after end push sent ~30min post terminal status
   webcast_live     INTEGER,                     -- 1 = webcast is currently live, 0/NULL = not live
+  previous_t0      INTEGER,                     -- t0 immediately before the most recent NET change
+  net_changed_at   INTEGER,                     -- unix timestamp of that change
   last_updated     INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
